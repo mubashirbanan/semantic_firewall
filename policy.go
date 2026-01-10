@@ -1,6 +1,3 @@
-{
-Filename: policy.go
-Full Content:
 package semanticfw
 
 import (
@@ -20,9 +17,11 @@ type LiteralPolicy struct {
 	AbstractControlFlowComparisons bool
 	KeepSmallIntegerIndices        bool
 	KeepReturnStatusValues         bool
-	SmallIntMin                    int64
-	SmallIntMax                    int64
-	AbstractOtherTypes             bool
+	// FIX: Added flag to keep string literals.
+	KeepStringLiterals bool
+	SmallIntMin        int64
+	SmallIntMax        int64
+	AbstractOtherTypes bool
 }
 
 // DefaultLiteralPolicy represents the standard policy for fingerprinting;
@@ -32,9 +31,12 @@ var DefaultLiteralPolicy = LiteralPolicy{
 	AbstractControlFlowComparisons: true,
 	KeepSmallIntegerIndices:        true,
 	KeepReturnStatusValues:         true,
-	SmallIntMin:                    -16,
-	SmallIntMax:                    16,
-	AbstractOtherTypes:             true,
+	// FIX: Set to false to maintain backward compatibility with existing tests,
+	// but the capability is now available for hardening.
+	KeepStringLiterals: false,
+	SmallIntMin:        -16,
+	SmallIntMax:        16,
+	AbstractOtherTypes: true,
 }
 
 // KeepAllLiteralsPolicy is designed for testing or exact matching by disabling
@@ -43,6 +45,7 @@ var KeepAllLiteralsPolicy = LiteralPolicy{
 	AbstractControlFlowComparisons: false,
 	KeepSmallIntegerIndices:        true,
 	KeepReturnStatusValues:         true,
+	KeepStringLiterals:             true,
 	SmallIntMin:                    math.MinInt64,
 	SmallIntMax:                    math.MaxInt64,
 	AbstractOtherTypes:             false,
@@ -75,6 +78,14 @@ func (p *LiteralPolicy) ShouldAbstract(c *ssa.Const, usageContext ssa.Instructio
 	// defensive check: nil constants cannot be abstracted or analyzed
 	if c == nil || c.Value == nil {
 		return false
+	}
+
+	// FIX: Check for strings first and preserve them if policy dictates.
+	if c.Value.Kind() == constant.String {
+		if p.KeepStringLiterals {
+			return false
+		}
+		return true
 	}
 
 	isInteger := c.Value.Kind() == constant.Int
@@ -243,5 +254,4 @@ func isComparisonOp(op token.Token) bool {
 	default:
 		return false
 	}
-}
 }

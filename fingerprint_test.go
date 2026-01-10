@@ -45,15 +45,18 @@ func TestFingerprinterOrchestration(t *testing.T) {
 		t.Fatalf("Failed: %v", err)
 	}
 
-	// Expecting Alpha, Alpha$1 (anon func), Zeta, and init#1 (user defined init).
-	if len(results) != 4 {
-		t.Fatalf("Expected 4 results (excluding synthetic init), got %d. Names: %v", len(results), getFunctionNames(results))
+	// BUG FIX #7: Now expecting 5 results including synthetic init:
+	// Alpha, Alpha$1 (anon func), Zeta, init (synthetic), and init#1 (user defined init).
+	// Synthetic init functions contain global variable initialization logic which is
+	// security-relevant and should be fingerprinted.
+	if len(results) != 5 {
+		t.Fatalf("Expected 5 results (including synthetic init), got %d. Names: %v", len(results), getFunctionNames(results))
 	}
 
 	initName := ""
 	actualOrder := getFunctionNames(results)
 	for _, name := range actualOrder {
-		if strings.Contains(name, "init") {
+		if strings.Contains(name, "init#") {
 			initName = name
 			break
 		}
@@ -65,7 +68,8 @@ func TestFingerprinterOrchestration(t *testing.T) {
 
 	// Verify deterministic sorting (alphabetical).
 	// Function names are now package-qualified (testmod.FunctionName).
-	expectedOrder := []string{"testmod.Alpha", "testmod.Alpha$1", "testmod.Zeta", initName}
+	// BUG FIX #7: Now includes testmod.init (synthetic) which handles global var initialization.
+	expectedOrder := []string{"testmod.Alpha", "testmod.Alpha$1", "testmod.Zeta", "testmod.init", initName}
 	sort.Strings(expectedOrder)
 
 	matches := true
@@ -127,8 +131,10 @@ func Beta() {
 		t.Fatalf("Failed to fingerprint packages: %v", err)
 	}
 
-	if len(results) != 3 {
-		t.Fatalf("Expected 3 results (Alpha, Beta, Beta$1), got %d. Names: %v", len(results), getFunctionNames(results))
+	// BUG FIX #7: Now expecting 4 results (Alpha, Beta, Beta$1, and synthetic init).
+	// Synthetic init is included because it may contain security-relevant global initialization.
+	if len(results) != 4 {
+		t.Fatalf("Expected 4 results (Alpha, Beta, Beta$1, init), got %d. Names: %v", len(results), getFunctionNames(results))
 	}
 
 	// 3. Verify positions using the FileSet from the loader.
@@ -264,8 +270,11 @@ func TestErrorHandling(t *testing.T) {
 		if err != nil {
 			t.Errorf("Did not expect error for empty package, but got: %v", err)
 		}
-		if len(results) != 0 {
-			t.Errorf("Expected 0 fingerprints for an empty package, but got %d. Names: %v", len(results), getFunctionNames(results))
+		// BUG FIX #7: Even an "empty" package has a synthetic init function.
+		// This is correct behavior as the init function handles package initialization.
+		// We now fingerprint synthetic functions for security reasons.
+		if len(results) != 1 {
+			t.Errorf("Expected 1 fingerprint (synthetic init) for empty package, but got %d. Names: %v", len(results), getFunctionNames(results))
 		}
 	})
 }

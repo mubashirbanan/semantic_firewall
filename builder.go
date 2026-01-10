@@ -28,7 +28,10 @@ func BuildSSAFromPackages(initialPkgs []*packages.Package) (*ssa.Program, *ssa.P
 	}
 
 	// Initializes the SSA program builder for all packages and dependencies.
-	prog, pkgs := ssautil.AllPackages(initialPkgs, ssa.BuilderMode(0))
+	// FIX: Enable InstantiateGenerics to ensure generic function bodies are built.
+	// Without this, generic functions in Go 1.18+ result in empty bodies, blocking analysis.
+	mode := ssa.InstantiateGenerics
+	prog, pkgs := ssautil.AllPackages(initialPkgs, mode)
 	if prog == nil {
 		return nil, nil, fmt.Errorf("failed to initialize SSA program builder")
 	}

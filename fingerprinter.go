@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"go/token"
 	"go/types"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -22,10 +23,31 @@ type FingerprintResult struct {
 	Pos          token.Pos
 	Line         int
 	Filename     string
+	// fn stores the SSA function for advanced analysis (unexported for internal use)
+	fn *ssa.Function
 }
 
-// Normalizes conditional branches to ensure consistent graph structure.
-func normalizeControlFlow(fn *ssa.Function) {
+// virtualControlFlowState stores the virtual control flow modifications for a function.
+// This allows fingerprinting without mutating the SSA graph.
+type virtualControlFlowState struct {
+	// swappedBlocks tracks blocks whose successors should be virtually swapped
+	swappedBlocks map[*ssa.BasicBlock]bool
+	// virtualBinOps tracks BinOp operators that should be virtually changed
+	virtualBinOps map[*ssa.BinOp]token.Token
+}
+
+func newVirtualControlFlowState() *virtualControlFlowState {
+	return &virtualControlFlowState{
+		swappedBlocks: make(map[*ssa.BasicBlock]bool),
+		virtualBinOps: make(map[*ssa.BinOp]token.Token),
+	}
+}
+
+// computeVirtualControlFlow analyzes conditional branches and records virtual normalizations.
+// This function is read-only and does not modify the SSA graph.
+func computeVirtualControlFlow(fn *ssa.Function) *virtualControlFlowState {
+	state := newVirtualControlFlowState()
+
 	for _, block := range fn.Blocks {
 		if len(block.Instrs) == 0 {
 			continue
@@ -35,14 +57,23 @@ func normalizeControlFlow(fn *ssa.Function) {
 			// Check if the condition is a BinOp
 			if binOp, ok := ifInstr.Cond.(*ssa.BinOp); ok {
 
-				// BUG FIX: Do not invert floating point or complex comparisons as it changes logic for NaN.
-				// NaN >= x is False, NaN < x is False. Swapping branches assumes inversion holds.
-				// Complex numbers have similar issues with undefined ordering.
-				if basic, ok := binOp.X.Type().Underlying().(*types.Basic); ok && ((basic.Info()&types.IsFloat) != 0 || (basic.Info()&types.IsComplex) != 0) {
+				// FIX: Logic Inversion Vulnerability in Generic Floating Point Comparisons.
+				// We must ONLY swap operands if the type guarantees total ordering (Int/String).
+				// We must NEVER swap Floats, Complex, or Generic Types (because T might be a Float).
+				// Original exclusionary check (isFloatOrComplex) failed to identify TypeParams.
+				isSafeToSwap := func(t types.Type) bool {
+					if basic, ok := t.Underlying().(*types.Basic); ok {
+						return (basic.Info() & (types.IsInteger | types.IsString)) != 0
+					}
+					// Pointers, Floats, Complex, Interfaces, and TypeParams are NOT safe to swap.
+					return false
+				}
+
+				if !isSafeToSwap(binOp.X.Type()) || !isSafeToSwap(binOp.Y.Type()) {
 					continue
 				}
 
-				// BUG FIX: Do not mutate BinOp if it has multiple referrers.
+				// Do not mutate BinOp if it has multiple referrers.
 				// If the condition is stored in a variable and used elsewhere (e.g., returned),
 				// mutating the operator corrupts the semantics of those other uses.
 				if refs := binOp.Referrers(); refs != nil && len(*refs) > 1 {
@@ -52,43 +83,56 @@ func normalizeControlFlow(fn *ssa.Function) {
 				var newOp token.Token
 				swap := false
 				switch binOp.Op {
-				case token.GEQ: // >= becomes <
+				case token.GEQ: // >= becomes < with branch swap
+					// Transformation: (a >= b) ? T : F  ≡  (a < b) ? F : T
+					// This normalizes exit-on-GEQ patterns to continue-on-LSS patterns.
 					newOp = token.LSS
 					swap = true
-				case token.GTR: // > becomes <=
+				case token.GTR: // > becomes <= with branch swap
+					// Transformation: (a > b) ? T : F  ≡  (a <= b) ? F : T
+					// This normalizes exit-on-GTR patterns to continue-on-LEQ patterns.
 					newOp = token.LEQ
 					swap = true
 				}
 
 				if swap {
-					// BUG FIX: Defensive check to ensure exactly 2 successors before swapping
+					// Defensive check to ensure exactly 2 successors before swapping
 					if len(block.Succs) != 2 {
 						continue
 					}
-					// Mutate the operator in place - this is safe because we're also
-					// swapping the successors to maintain correct semantics.
-					binOp.Op = newOp
-
-					// Swap successors
-					block.Succs[0], block.Succs[1] = block.Succs[1], block.Succs[0]
+					// Record virtual changes instead of mutating.
+					// Both the operator change AND the branch swap are required
+					// to preserve semantic equivalence while normalizing control flow.
+					state.virtualBinOps[binOp] = newOp
+					state.swappedBlocks[block] = true
 				}
 			}
 		}
 	}
+	return state
 }
 
-// Generates the hash and canonical string representation for an SSA function.
+// GenerateFingerprint generates the hash and canonical string representation for an SSA function.
+// This function uses a pooled Canonicalizer to ensure high throughput and low allocation overhead.
 func GenerateFingerprint(fn *ssa.Function, policy LiteralPolicy, strictMode bool) FingerprintResult {
-	normalizeControlFlow(fn)
+	// Compute virtual control flow state without mutating
+	virtualCF := computeVirtualControlFlow(fn)
 
-	canonicalizer := NewCanonicalizer(policy)
+	// Acquire a canonicalizer from the pool.
+	// This satisfies the requirement to avoid a shared singleton while maintaining performance.
+	canonicalizer := AcquireCanonicalizer(policy)
+	defer ReleaseCanonicalizer(canonicalizer)
+
 	canonicalizer.StrictMode = strictMode
+
+	// Pass virtual state to canonicalizer using the direct method
+	canonicalizer.ApplyVirtualControlFlowFromState(virtualCF.swappedBlocks, virtualCF.virtualBinOps)
 	canonicalIR := canonicalizer.CanonicalizeFunction(fn)
 
 	hash := sha256.Sum256([]byte(canonicalIR))
 	fingerprint := hex.EncodeToString(hash[:])
 
-	// BUG FIX: Resolve position information here while Fset is available.
+	// Resolve position information here while Fset is available.
 	line := 0
 	filename := ""
 	if fn.Prog != nil && fn.Prog.Fset != nil {
@@ -98,23 +142,24 @@ func GenerateFingerprint(fn *ssa.Function, policy LiteralPolicy, strictMode bool
 	}
 
 	return FingerprintResult{
-		// BUG FIX: Use RelString(nil) to get fully qualified names (e.g. (*Type).Method).
+		// Use RelString(nil) to get fully qualified names (e.g. (*Type).Method).
 		FunctionName: fn.RelString(nil),
 		Fingerprint:  fingerprint,
 		CanonicalIR:  canonicalIR,
 		Pos:          fn.Pos(),
 		Line:         line,
 		Filename:     filename,
+		fn:           fn,
 	}
 }
 
-// Analyzes a single Go source file provided as a string.
+// FingerprintSource analyzes a single Go source file provided as a string.
 // This is the primary entry point for verifying code snippets or patch hunks.
 func FingerprintSource(filename string, src string, policy LiteralPolicy) ([]FingerprintResult, error) {
 	return FingerprintSourceAdvanced(filename, src, policy, false)
 }
 
-// Provides an extended interface for source analysis with strict mode control.
+// FingerprintSourceAdvanced provides an extended interface for source analysis with strict mode control.
 func FingerprintSourceAdvanced(filename string, src string, policy LiteralPolicy, strictMode bool) ([]FingerprintResult, error) {
 	initialPkgs, err := loadPackagesFromSource(filename, src)
 	if err != nil {
@@ -124,7 +169,7 @@ func FingerprintSourceAdvanced(filename string, src string, policy LiteralPolicy
 	return FingerprintPackages(initialPkgs, policy, strictMode)
 }
 
-// Loads packages from a provided source string for analysis.
+// loadPackagesFromSource loads packages from a provided source string for analysis.
 func loadPackagesFromSource(filename string, src string) ([]*packages.Package, error) {
 	if len(src) == 0 {
 		return nil, fmt.Errorf("input source code is empty")
@@ -137,6 +182,15 @@ func loadPackagesFromSource(filename string, src string) ([]*packages.Package, e
 	}
 
 	fset := token.NewFileSet()
+
+	// FIX: Network Hardening / Anti-SSRF.
+	// Explicitly disable the GOPROXY and enable GOPRIVATE to prevent the loader from reaching out
+	// to the network if the analyzed source contains external dependencies.
+	// GOPROXY=off alone is insufficient as it may fall back to direct VCS fetching.
+	// GOPRIVATE=* ensures the tool treats all modules as private and avoids checksum DB lookups.
+	env := os.Environ()
+	env = append(env, "GOPROXY=off", "GOPRIVATE=*", "GONOSUMDB=*")
+
 	cfg := &packages.Config{
 		Dir:  sourceDir,
 		Mode: packages.LoadAllSyntax,
@@ -145,6 +199,7 @@ func loadPackagesFromSource(filename string, src string) ([]*packages.Package, e
 			absFilename: []byte(src),
 		},
 		Tests: false,
+		Env:   env,
 	}
 
 	initialPkgs, err := packages.Load(cfg, "file="+absFilename)
@@ -166,7 +221,7 @@ func loadPackagesFromSource(filename string, src string) ([]*packages.Package, e
 	return initialPkgs, nil
 }
 
-// Iterates over loaded packages to construct SSA and generate results.
+// FingerprintPackages iterates over loaded packages to construct SSA and generate results.
 func FingerprintPackages(initialPkgs []*packages.Package, policy LiteralPolicy, strictMode bool) ([]FingerprintResult, error) {
 	if len(initialPkgs) == 0 {
 		return nil, fmt.Errorf("input packages list is empty")
@@ -178,8 +233,11 @@ func FingerprintPackages(initialPkgs []*packages.Package, policy LiteralPolicy, 
 	}
 
 	var results []FingerprintResult
+	// Track visited functions to prevent infinite recursion
+	// and duplicate processing across packages.
+	visited := make(map[*ssa.Function]bool)
 
-	// BUG FIX: Iterate over all packages provided, not just the main one.
+	// Iterate over all packages provided, not just the main one.
 	for _, pkg := range initialPkgs {
 		ssaPkg := prog.Package(pkg.Types)
 		if ssaPkg == nil {
@@ -189,15 +247,15 @@ func FingerprintPackages(initialPkgs []*packages.Package, policy LiteralPolicy, 
 		for _, member := range ssaPkg.Members {
 			switch mem := member.(type) {
 			case *ssa.Function:
-				// Top-level functions (and init)
-				processFunctionAndAnons(mem, policy, strictMode, &results)
+				// Top-level functions (including init)
+				processFunctionAndAnons(mem, policy, strictMode, &results, visited)
 			case *ssa.Type:
-				// BUG FIX: Explicitly handle methods associated with named types.
+				// Explicitly handle methods associated with named types.
 				if named, ok := mem.Type().(*types.Named); ok {
 					for i := 0; i < named.NumMethods(); i++ {
 						m := named.Method(i)
 						if fn := prog.FuncValue(m); fn != nil {
-							processFunctionAndAnons(fn, policy, strictMode, &results)
+							processFunctionAndAnons(fn, policy, strictMode, &results, visited)
 						}
 					}
 				}
@@ -212,16 +270,23 @@ func FingerprintPackages(initialPkgs []*packages.Package, policy LiteralPolicy, 
 	return results, nil
 }
 
-// Recursively analyzes a function and its nested closures.
-func processFunctionAndAnons(fn *ssa.Function, policy LiteralPolicy, strictMode bool, results *[]FingerprintResult) {
-	if fn.Synthetic == "" {
-		if len(fn.Blocks) > 0 {
-			result := GenerateFingerprint(fn, policy, strictMode)
-			*results = append(*results, result)
-		}
+// processFunctionAndAnons recursively analyzes a function and its nested closures.
+func processFunctionAndAnons(fn *ssa.Function, policy LiteralPolicy, strictMode bool, results *[]FingerprintResult, visited map[*ssa.Function]bool) {
+	// Prevent infinite recursion by tracking visited functions.
+	if visited[fn] {
+		return
+	}
+	visited[fn] = true
+
+	// Process ALL functions including synthetic ones.
+	// Synthetic functions include init() which contains global variable initialization.
+	// We include synthetic functions but still require Blocks > 0.
+	if len(fn.Blocks) > 0 {
+		result := GenerateFingerprint(fn, policy, strictMode)
+		*results = append(*results, result)
 	}
 
 	for _, anon := range fn.AnonFuncs {
-		processFunctionAndAnons(anon, policy, strictMode, results)
+		processFunctionAndAnons(anon, policy, strictMode, results, visited)
 	}
 }

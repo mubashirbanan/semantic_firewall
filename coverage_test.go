@@ -109,11 +109,12 @@ func TestInstructionCoverage(t *testing.T) {
 			funcName: "conversions",
 			expected: []string{
 				`Convert uint, <vN>`,
-				// Types are sanitized to use package name instead of full path
-				`Convert main.MyInt, <vN>`,
+				// BUG FIX #3: Types are now sanitized to use full package path instead of just name.
+				// This prevents collisions between packages with same name (e.g., math/rand vs crypto/rand).
+				`Convert testmod.MyInt, <vN>`,
 				`MakeInterface interface{}, <vN>`,
-				`TypeAssert <vN>, AssertedType:main.MyInt, CommaOk`,
-				`ChangeType main.IntPtr, <vN>`,
+				`TypeAssert <vN>, AssertedType:testmod.MyInt, CommaOk`,
+				`ChangeType testmod.IntPtr, <vN>`,
 			},
 		},
 		{
