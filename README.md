@@ -174,41 +174,181 @@ for _, r := range results {
 ## Technical Deep Dive
 
 <details>
-<summary><strong>Click to expand: SCEV & The Zipper</strong></summary>
+<summary><strong>Click to expand: Architecture & Algorithms</strong></summary>
 
-### How It Works
+### Pipeline Overview
 
-1. **Parse** — Load Go source into SSA (Static Single Assignment) form
-2. **Canonicalize** — Normalize variable names, branch ordering, loop structures
-3. **Fingerprint** — SHA-256 hash of the canonical IR
+```
+Source → SSA → Loop Analysis → SCEV → Canonicalization → SHA-256
+          ↓         ↓            ↓            ↓
+      go/ssa    Tarjan's     Symbolic     Virtual IR
+                 SCC        Evaluation   Normalization
+```
 
-The result: semantically equivalent code produces identical fingerprints.
+1. **SSA Construction** — `golang.org/x/tools/go/ssa` converts source to Static Single Assignment form with explicit control flow graphs
+2. **Loop Detection** — Natural loop identification via backedge detection (edge B→H where H dominates B)
+3. **SCEV Analysis** — Algebraic characterization of loop variables as closed-form recurrences
+4. **Canonicalization** — Deterministic IR transformation: register renaming, branch normalization, loop virtualization
+5. **Fingerprint** — SHA-256 of canonical IR string
 
-### Scalar Evolution (SCEV) Analysis
+### Scalar Evolution (SCEV) Engine
 
-Standard hashing is brittle—changing `for i := 0` to `for range` breaks the hash. `sfw` solves this with an SCEV engine (`scev.go`) that algebraically solves loops:
+The SCEV framework (`scev.go`, 746 LOC) solves the "loop equivalence problem"—proving that syntactically different loops compute the same sequence of values.
 
-- **Induction Variable Detection:** Classifies loop variables as Add Recurrences: $\{Start, +, Step\}$
-- **Trip Count Derivation:** Proves that a `range` loop and an index loop iterate the same number of times
-- **Loop Invariant Hoisting:** Invariant expressions (e.g., `len(s)`) are virtually hoisted, so manual optimizations don't alter fingerprints
+**Core Abstraction: Add Recurrences**
 
-**Result:** Refactor loop syntax freely. If the math is the same, the fingerprint is the same.
+An induction variable is represented as $\{Start, +, Step\}_L$, meaning at iteration $k$ the value is:
+
+$$Val(k) = Start + (Step \times k)$$
+
+This representation is closed under affine transformations:
+
+| Operation | Result |
+|-----------|--------|
+| $\{S, +, T\} + C$ | $\{S+C, +, T\}$ |
+| $C \times \{S, +, T\}$ | $\{C \times S, +, C \times T\}$ |
+| $\{S_1, +, T_1\} + \{S_2, +, T_2\}$ | $\{S_1+S_2, +, T_1+T_2\}$ |
+
+**IV Detection Algorithm (Tarjan's SCC)**
+
+```
+1. Build dependency graph restricted to loop body
+2. Find SCCs via Tarjan's algorithm (O(V+E))
+3. For each SCC containing a header Phi:
+   a. Extract cycle: Phi → BinOp → Phi
+   b. Classify: Basic ({S,+,C}), Geometric ({S,*,C}), Polynomial
+   c. Verify step is loop-invariant
+4. Propagate SCEV to derived expressions via recursive folding
+```
+
+**Trip Count Derivation**
+
+For a loop `for i := Start; i < Limit; i += Step`:
+
+$$TripCount = \left\lceil \frac{Limit - Start}{Step} \right\rceil$$
+
+Computed via ceiling division: `(Limit - Start + Step - 1) / Step`
+
+The engine handles:
+- Up-counting (`i < N`) and down-counting (`i > N`) loops
+- Inclusive bounds (`i <= N` → add 1 to numerator)
+- Negative steps (normalized to absolute value)
+- Multi-predecessor loop headers (validates consistent start values)
+
+### Canonicalization Engine
+
+The canonicalizer (`canonicalizer.go`, 1162 LOC) transforms SSA into a deterministic string representation via five phases:
+
+**Phase 1: Loop & SCEV Analysis**
+```go
+c.loopInfo = DetectLoops(fn)
+AnalyzeSCEV(c.loopInfo)
+```
+
+**Phase 2: Semantic Normalization**
+- **Invariant Hoisting**: Pure calls like `len(s)` are virtually moved to pre-header
+- **IV Virtualization**: Phi nodes for IVs are replaced with SCEV notation `{0, +, 1}`
+- **Derived IV Propagation**: Expressions like `i*4` become `{0, +, 4}` in output
+
+**Phase 3: Register Renaming**
+```
+Parameters: p0, p1, p2, ...
+Free Variables: fv0, fv1, ...
+Instructions: v0, v1, v2, ... (DFS order)
+```
+
+**Phase 4: Deterministic Block Ordering**
+
+Blocks are traversed in dominance-respecting DFS order, ensuring identical output regardless of SSA construction order. Successor ordering is normalized:
+- `>=` branches are rewritten to `<` with swapped successors
+- `>` branches are rewritten to `<=` with swapped successors
+
+**Phase 5: Virtual Control Flow**
+
+Branch normalization is applied *virtually* (no SSA mutation) via lookup tables:
+```go
+virtualBlocks map[*ssa.BasicBlock]*virtualBlock  // swapped successors
+virtualBinOps map[*ssa.BinOp]token.Token         // normalized operators
+```
 
 ### The Semantic Zipper
 
-When logic *does* change (e.g., architectural refactors), fingerprint comparison fails. The Zipper algorithm (`zipper.go`) takes two SSA graphs and "zips" them together starting from function parameters:
+The Zipper (`zipper.go`, 568 LOC) computes a semantic diff between two functions—what actually changed in behavior, ignoring cosmetic differences.
 
-- **Anchor Alignment:** Parameters and free variables establish deterministic entry points
-- **Forward Propagation:** Traverses use-def chains to match semantically equivalent nodes
-- **Divergence Isolation:** Reports exactly what changed (e.g., "added `Call <net.Dial>`, preserved all assignments")
+**Algorithm: Parallel Graph Traversal**
 
-**Result:** A semantic changelog that ignores renaming, reordering, and helper extraction.
+```
+PHASE 0: Semantic Analysis
+  - Run SCEV on both functions independently
+  - Build canonicalizers for operand comparison
+
+PHASE 1: Anchor Alignment
+  - Map parameters positionally: oldFn.Params[i] ↔ newFn.Params[i]
+  - Map free variables if counts match
+  - Seed entry block via sequential matching (critical for main())
+
+PHASE 2: Forward Propagation (BFS on Use-Def chains)
+  while queue not empty:
+    (vOld, vNew) = dequeue()
+    for each user uOld of vOld:
+      candidates = users of vNew with matching structural fingerprint
+      for uNew in candidates:
+        if areEquivalent(uOld, uNew):
+          map(uOld, uNew)
+          enqueue((uOld, uNew))
+          break
+
+PHASE 2.5: Terminator Scavenging
+  - Explicitly match Return/Panic instructions via operand equivalence
+  - Handles cases where terminators aren't reached via normal propagation
+
+PHASE 3: Divergence Isolation
+  - Added = newFn instructions not in reverse map
+  - Removed = oldFn instructions not in forward map
+```
+
+**Equivalence Checking**
+
+Two instructions are equivalent iff:
+1. Same Go type (`reflect.TypeOf`)
+2. Same SSA value type (`types.Identical`)
+3. Same operation-specific properties (BinOp.Op, Field index, Alloc.Heap, etc.)
+4. All operands equivalent (recursive, with commutativity handling for ADD/MUL/AND/OR/XOR)
+
+**Structural Fingerprinting (DoS Prevention)**
+
+To prevent $O(N \times M)$ comparisons on high-fanout values, users are bucketed by structural fingerprint:
+```go
+fp := fmt.Sprintf("%T:%s", instr, op)  // e.g., "*ssa.BinOp:+"
+candidates := newByOp[fp]              // Only compare compatible types
+```
+
+Bucket size is capped at 100 to bound worst-case complexity.
 
 ### Security Hardening
 
-- **Cycle Detection:** Prevents stack overflow DoS from malformed cyclic graphs
-- **IR Injection Prevention:** Sanitizes string literals and struct tags to prevent fake instruction injection
-- **NaN-Safe Comparisons:** Limits branch normalization to integer/string types to avoid floating-point edge cases
+| Threat | Mitigation |
+|--------|------------|
+| **Algorithmic DoS** (exponential SCEV) | Memoization cache per-loop: `loop.SCEVCache` |
+| **Quadratic Zipper** (5000 identical ADDs) | Fingerprint bucketing + `MaxCandidates=100` |
+| **RCE via CGO** | `CGO_ENABLED=0` during `packages.Load` |
+| **SSRF via module fetch** | `GOPROXY=off` prevents network calls |
+| **Stack overflow** (cyclic graphs) | Visited sets in all recursive traversals |
+| **NaN comparison instability** | Branch normalization restricted to `IsInteger \| IsString` types |
+| **IR injection** (fake instructions in strings) | Struct tags and literals sanitized before hashing |
+| **TypeParam edge cases** | Generic types excluded from branch swap (may hide floats) |
+
+### Complexity Analysis
+
+| Operation | Time | Space |
+|-----------|------|-------|
+| SSA Construction | $O(N)$ | $O(N)$ |
+| Loop Detection | $O(V+E)$ | $O(V)$ |
+| SCEV Analysis | $O(L \times I)$ amortized | $O(I)$ per loop |
+| Canonicalization | $O(I \times \log B)$ | $O(I + B)$ |
+| Zipper | $O(I^2)$ worst, $O(I)$ typical | $O(I)$ |
+
+Where $N$ = source size, $V$ = blocks, $E$ = edges, $L$ = loops, $I$ = instructions, $B$ = blocks.
 
 </details>
 
