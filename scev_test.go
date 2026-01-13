@@ -134,8 +134,7 @@ func geometricLoop(n int) int {
 	}
 
 	if !foundMulIV {
-		// Note: This might not be detected as a proper geometric IV in all cases
-		// depending on Go's SSA representation
+		// May not be detected depending on Go's SSA representation.
 		t.Log("Geometric IV not detected (may be represented differently in SSA)")
 	}
 }

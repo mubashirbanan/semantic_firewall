@@ -92,8 +92,13 @@ func TestShortFunctionName(t *testing.T) {
 		{"testpkg.init", "init"},
 		{"testpkg.(*Type).Method", "(*Type).Method"},
 		{"pkg.Func", "Func"},
-		{"a.b.c", "b.c"}, // Takes first dot outside parens
+		{"a.b.c", "b.c"}, // Takes first dot outside parens (legacy behavior)
 		{"NoDot", "NoDot"},
+		// New cases for full module paths
+		{"github.com/BlackVectorOps/semantic_firewall/samples/clean.StartBeacon", "StartBeacon"},
+		{"github.com/BlackVectorOps/semantic_firewall/samples/dirty.z", "z"},
+		{"github.com/foo/bar.(*Type).Method", "(*Type).Method"},
+		{"github.com/foo/bar.init", "init"},
 	}
 
 	for _, tt := range tests {

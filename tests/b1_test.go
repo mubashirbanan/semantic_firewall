@@ -1,10 +1,12 @@
-package semanticfw
+package semanticfw_test
 
 import (
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	sfw "github.com/BlackVectorOps/semantic_firewall"
 )
 
 // TestSemanticCorruption_BinOpReuse ensures that normalization does not occur
@@ -19,7 +21,7 @@ func check(a, b int) bool {
 	return false
 }
 `
-	tempDir, cleanup := setupTestEnv(t, "bug-sem-")
+	tempDir, cleanup := sfw.SetupTestEnv(t, "bug-sem-")
 	defer cleanup()
 
 	path := filepath.Join(tempDir, "main.go")
@@ -27,12 +29,12 @@ func check(a, b int) bool {
 		t.Fatalf("Failed to write temp file: %v", err)
 	}
 
-	results, err := FingerprintSource(path, src, DefaultLiteralPolicy)
+	results, err := sfw.FingerprintSource(path, src, sfw.DefaultLiteralPolicy)
 	if err != nil {
 		t.Fatalf("FingerprintSource failed: %v", err)
 	}
 
-	res := findResult(results, "check")
+	res := sfw.FindResult(results, "check")
 	if res == nil {
 		t.Fatal("Result for 'check' not found")
 	}
@@ -56,14 +58,14 @@ func TestMethodDiscovery(t *testing.T) {
 type MyType struct{}
 func (m *MyType) MyMethod() {}
 `
-	tempDir, cleanup := setupTestEnv(t, "bug-method-")
+	tempDir, cleanup := sfw.SetupTestEnv(t, "bug-method-")
 	defer cleanup()
 	path := filepath.Join(tempDir, "main.go")
 	if err := os.WriteFile(path, []byte(src), 0644); err != nil {
 		t.Fatalf("Failed to write temp file: %v", err)
 	}
 
-	results, err := FingerprintSource(path, src, DefaultLiteralPolicy)
+	results, err := sfw.FingerprintSource(path, src, sfw.DefaultLiteralPolicy)
 	if err != nil {
 		t.Fatalf("FingerprintSource failed: %v", err)
 	}
@@ -76,7 +78,7 @@ func (m *MyType) MyMethod() {}
 		}
 	}
 	if !found {
-		t.Errorf("Method 'MyMethod' was not discovered. Results: %v", getFunctionNames(results))
+		t.Errorf("Method 'MyMethod' was not discovered. Results: %v", sfw.GetFunctionNames(results))
 	}
 }
 
@@ -90,21 +92,21 @@ func TestStringCommutativity(t *testing.T) {
 		return b + a
 	}
 	`
-	tempDir, cleanup := setupTestEnv(t, "bug-str-")
+	tempDir, cleanup := sfw.SetupTestEnv(t, "bug-str-")
 	defer cleanup()
 	tempFile := filepath.Join(tempDir, "strings.go")
 	os.WriteFile(tempFile, []byte(src), 0644)
 
-	results, err := FingerprintSource(tempFile, src, KeepAllLiteralsPolicy)
+	results, err := sfw.FingerprintSource(tempFile, src, sfw.KeepAllLiteralsPolicy)
 	if err != nil {
 		t.Fatalf("Failed: %v", err)
 	}
 
-	resNorm := findResult(results, "concatNormal")
-	resRev := findResult(results, "concatReverse")
+	resNorm := sfw.FindResult(results, "concatNormal")
+	resRev := sfw.FindResult(results, "concatReverse")
 
 	if resNorm == nil || resRev == nil {
-		t.Fatalf("Functions not found. Got: %v", getFunctionNames(results))
+		t.Fatalf("Functions not found. Got: %v", sfw.GetFunctionNames(results))
 	}
 
 	if resNorm.Fingerprint == resRev.Fingerprint {

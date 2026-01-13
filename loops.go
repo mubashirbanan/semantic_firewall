@@ -9,7 +9,7 @@ import (
 
 // -- Section 7.1 Data Structures --
 
-// LoopInfo summarizes loop analysis for a single function.
+// Summarizes loop analysis for a single function.
 type LoopInfo struct {
 	Function *ssa.Function
 	Loops    []*Loop // Top-level loops (roots of the hierarchy)
@@ -17,7 +17,7 @@ type LoopInfo struct {
 	LoopMap map[*ssa.BasicBlock]*Loop
 }
 
-// Loop represents a natural loop in the SSA graph.
+// Represents a natural loop in the SSA graph.
 // Reference: Section 2.3 Natural Loops.
 type Loop struct {
 	Header *ssa.BasicBlock
@@ -35,13 +35,16 @@ type Loop struct {
 	// Semantic Analysis (populated in scev.go)
 	Inductions map[*ssa.Phi]*InductionVariable
 	TripCount  SCEV // Symbolic expression
+
+	// Memoization cache for SCEV analysis to prevent exponential complexity.
+	SCEVCache map[ssa.Value]SCEV
 }
 
 func (l *Loop) String() string {
 	return fmt.Sprintf("L_%s", l.Header.String())
 }
 
-// InductionVariable describes a detected IV.
+// Describes a detected IV.
 // Reference: Section 3.2 Classification Taxonomy.
 type InductionVariable struct {
 	Phi   *ssa.Phi
@@ -60,7 +63,7 @@ const (
 	IVTypePolynomial        // Step is another IV
 )
 
-// DetectLoops reconstructs the loop hierarchy using dominance relations.
+// Reconstructs the loop hierarchy using dominance relations.
 // Reference: Section 2.3.1 Algorithm: Detecting Natural Loops.
 func DetectLoops(fn *ssa.Function) *LoopInfo {
 	// Ensure dominator tree is computed for the function
@@ -112,6 +115,7 @@ func DetectLoops(fn *ssa.Function) *LoopInfo {
 			Blocks:     make(map[*ssa.BasicBlock]bool),
 			Inductions: make(map[*ssa.Phi]*InductionVariable),
 			Children:   make([]*Loop, 0),
+			SCEVCache:  make(map[ssa.Value]SCEV),
 		}
 
 		// 3. Construct the Loop Body (Worklist Algorithm)
@@ -127,8 +131,7 @@ func DetectLoops(fn *ssa.Function) *LoopInfo {
 			}
 		}
 
-		// BUG FIX: Sort exits to ensure deterministic order.
-		// Iteration over loop.Blocks (map) above makes order random.
+		// Sort exits for deterministic order.
 		sort.Slice(loop.Exits, func(i, j int) bool {
 			return loop.Exits[i].Index < loop.Exits[j].Index
 		})
@@ -170,7 +173,7 @@ func DetectLoops(fn *ssa.Function) *LoopInfo {
 	return info
 }
 
-// constructLoopBody builds the set of blocks in the natural loop.
+// Builds the set of blocks in the natural loop.
 // Algorithm from Section 2.3.1 Step 3.
 func constructLoopBody(loop *Loop, latches []*ssa.BasicBlock) {
 	loop.Blocks[loop.Header] = true

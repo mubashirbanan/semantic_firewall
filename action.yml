@@ -1,25 +1,62 @@
 name: 'Semantic Firewall'
-description: 'Enforce semantic immutability for Go source files (Blocker Mode). Generates deterministic fingerprints to detect logic corruption. For semantic diff reports, see CLI documentation.'
+description: 'Behavioral analysis engine for Go. Detects malware, proves loop equivalence, and enforces semantic immutability using SCEV and Topology Matching.'
 author: 'BlackVectorOps'
 
 branding:
   icon: 'shield'
-  color: 'blue'
+  color: 'purple'
 
 inputs:
   path:
-    description: 'Path to file or directory to fingerprint'
+    description: 'Path to file or directory to analyze'
     required: false
     default: '.'
+  mode:
+    description: 'Operation mode: check, diff, or scan'
+    required: false
+    default: 'check'
   go-version:
     description: 'Go version to use'
     required: false
     default: '1.24'
+  signatures:
+    description: 'Path to signature database (scan mode only)'
+    required: false
+    default: './signatures.db'
+  threshold:
+    description: 'Match confidence threshold 0.0-1.0 (scan mode only)'
+    required: false
+    default: '0.75'
+  strict:
+    description: 'Enable strict mode validation (check mode only)'
+    required: false
+    default: 'false'
+  fail-on-alert:
+    description: 'Fail workflow if malware detected (scan mode only)'
+    required: false
+    default: 'true'
+  scan-deps:
+    description: 'Scan imported dependencies (scan mode only)'
+    required: false
+    default: 'false'
+  deps-depth:
+    description: 'Dependency scan depth: direct or transitive (scan mode only)'
+    required: false
+    default: 'direct'
 
 outputs:
-  fingerprints:
-    description: 'JSON output of all function fingerprints'
-    value: ${{ steps.fingerprint.outputs.result }}
+  result:
+    description: 'JSON output from the selected mode'
+    value: ${{ steps.run-sfw.outputs.result }}
+  alert-count:
+    description: 'Number of malware alerts (scan mode)'
+    value: ${{ steps.run-sfw.outputs.alert-count }}
+  deps-scanned:
+    description: 'Number of dependency functions scanned (scan mode with --deps)'
+    value: ${{ steps.run-sfw.outputs.deps-scanned }}
+  semantic-match-pct:
+    description: 'Semantic match percentage (diff mode)'
+    value: ${{ steps.run-sfw.outputs.semantic-match-pct }}
 
 runs:
   using: 'composite'
@@ -33,16 +70,108 @@ runs:
       shell: bash
       run: go install github.com/BlackVectorOps/semantic_firewall/cmd/sfw@latest
 
-    - name: Generate fingerprints
-      id: fingerprint
+    - name: Run Semantic Firewall
+      id: run-sfw
       shell: bash
       run: |
-        echo "::group::Semantic Fingerprints"
-        OUTPUT=$(sfw check ${{ inputs.path }})
-        echo "$OUTPUT"
+        set -e
+        MODE="${{ inputs.mode }}"
+        PATH_ARG="${{ inputs.path }}"
+        
+        echo "::group::Semantic Firewall ($MODE mode)"
+        
+        case "$MODE" in
+          check)
+            STRICT_FLAG=""
+            if [[ "${{ inputs.strict }}" == "true" ]]; then
+              STRICT_FLAG="--strict"
+            fi
+            OUTPUT=$(sfw check $STRICT_FLAG "$PATH_ARG")
+            echo "$OUTPUT"
+            ;;
+            
+          diff)
+            # For diff mode, compare changed files against base
+            if [[ -n "$GITHUB_BASE_REF" ]]; then
+              BASE_SHA=$(git rev-parse origin/$GITHUB_BASE_REF)
+            else
+              BASE_SHA=$(git rev-parse HEAD~1)
+            fi
+            
+            COMBINED_OUTPUT="[]"
+            TOTAL_MATCH_PCT=0
+            FILE_COUNT=0
+            
+            while IFS= read -r file; do
+              [[ -f "$file" ]] || continue
+              [[ "$file" == *.go ]] || continue
+              [[ "$file" != *_test.go ]] || continue
+              
+              git show "$BASE_SHA:$file" > /tmp/old.go 2>/dev/null || echo "" > /tmp/old.go
+              DIFF_OUT=$(sfw diff /tmp/old.go "$file" 2>/dev/null || echo '{}')
+              echo "$DIFF_OUT"
+              
+              # Extract semantic match percentage
+              PCT=$(echo "$DIFF_OUT" | jq -r '.summary.semantic_match_pct // 0')
+              TOTAL_MATCH_PCT=$(echo "$TOTAL_MATCH_PCT + $PCT" | bc)
+              FILE_COUNT=$((FILE_COUNT + 1))
+              
+              rm -f /tmp/old.go
+            done < <(git diff --name-only "$BASE_SHA" HEAD -- '*.go' 2>/dev/null || find "$PATH_ARG" -name '*.go' -not -name '*_test.go')
+            
+            OUTPUT="$COMBINED_OUTPUT"
+            
+            # Calculate average match percentage
+            if [[ $FILE_COUNT -gt 0 ]]; then
+              AVG_PCT=$(echo "scale=1; $TOTAL_MATCH_PCT / $FILE_COUNT" | bc)
+            else
+              AVG_PCT="100.0"
+            fi
+            echo "semantic-match-pct=$AVG_PCT" >> $GITHUB_OUTPUT
+            ;;
+            
+          scan)
+            DB_PATH="${{ inputs.signatures }}"
+            THRESHOLD="${{ inputs.threshold }}"
+            DEPS_FLAG=""
+            DEPS_DEPTH="${{ inputs.deps-depth }}"
+            
+            if [[ "${{ inputs.scan-deps }}" == "true" ]]; then
+              DEPS_FLAG="--deps --deps-depth $DEPS_DEPTH"
+            fi
+            
+            if [[ ! -f "$DB_PATH" ]]; then
+              echo "::warning::Signature database not found at $DB_PATH"
+              OUTPUT='{"alerts": [], "summary": {"total_alerts": 0}}'
+            else
+              OUTPUT=$(sfw scan "$PATH_ARG" --db "$DB_PATH" --threshold "$THRESHOLD" $DEPS_FLAG)
+              echo "$OUTPUT"
+              
+              # Extract alert count
+              ALERT_COUNT=$(echo "$OUTPUT" | jq -r '.summary.total_alerts // 0')
+              echo "alert-count=$ALERT_COUNT" >> $GITHUB_OUTPUT
+              
+              # Extract dependencies scanned count
+              DEPS_SCANNED=$(echo "$OUTPUT" | jq -r '.dependencies_scanned // 0')
+              echo "deps-scanned=$DEPS_SCANNED" >> $GITHUB_OUTPUT
+              
+              # Fail if alerts found and fail-on-alert is true
+              if [[ "${{ inputs.fail-on-alert }}" == "true" ]] && [[ "$ALERT_COUNT" -gt 0 ]]; then
+                echo "::error::Malware detected! $ALERT_COUNT alert(s) found."
+                exit 1
+              fi
+            fi
+            ;;
+            
+          *)
+            echo "::error::Unknown mode: $MODE. Use 'check', 'diff', or 'scan'."
+            exit 1
+            ;;
+        esac
+        
         echo "::endgroup::"
         
-        # Save to output
+        # Save result to output
         echo "result<<EOF" >> $GITHUB_OUTPUT
         echo "$OUTPUT" >> $GITHUB_OUTPUT
         echo "EOF" >> $GITHUB_OUTPUT

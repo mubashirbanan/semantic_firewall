@@ -15,7 +15,8 @@ import (
 	"golang.org/x/tools/go/ssa"
 )
 
-// Encapsulates the output of the semantic fingerprinting process for a function.
+// Holds everything we learned from fingerprinting a single function: the hash,
+// the canonical IR that produced it, and the source location for traceability.
 type FingerprintResult struct {
 	FunctionName string
 	Fingerprint  string
@@ -27,14 +28,15 @@ type FingerprintResult struct {
 	fn *ssa.Function
 }
 
-// GetSSAFunction returns the underlying SSA function for advanced analysis workflows
-// such as semantic diffing with the Zipper algorithm. Returns nil if not available.
+// Exposes the underlying SSA function for consumers that need deeper analysis,
+// like semantic diffing with the Zipper algorithm. Returns nil if unavailable.
 func (r FingerprintResult) GetSSAFunction() *ssa.Function {
 	return r.fn
 }
 
-// virtualControlFlowState stores the virtual control flow modifications for a function.
-// This allows fingerprinting without mutating the SSA graph.
+// Tracks virtual control flow modifications without touching the actual SSA graph.
+// We record which blocks should have swapped successors and which BinOps should
+// use different operators, then apply these during canonicalization.
 type virtualControlFlowState struct {
 	// swappedBlocks tracks blocks whose successors should be virtually swapped
 	swappedBlocks map[*ssa.BasicBlock]bool
@@ -49,8 +51,8 @@ func newVirtualControlFlowState() *virtualControlFlowState {
 	}
 }
 
-// computeVirtualControlFlow analyzes conditional branches and records virtual normalizations.
-// This function is read-only and does not modify the SSA graph.
+// Analyzes conditional branches and figures out what normalizations we need.
+// Everything stays read only here; the SSA graph remains untouched.
 func computeVirtualControlFlow(fn *ssa.Function) *virtualControlFlowState {
 	state := newVirtualControlFlowState()
 
@@ -63,10 +65,8 @@ func computeVirtualControlFlow(fn *ssa.Function) *virtualControlFlowState {
 			// Check if the condition is a BinOp
 			if binOp, ok := ifInstr.Cond.(*ssa.BinOp); ok {
 
-				// FIX: Logic Inversion Vulnerability in Generic Floating Point Comparisons.
-				// We must ONLY swap operands if the type guarantees total ordering (Int/String).
-				// We must NEVER swap Floats, Complex, or Generic Types (because T might be a Float).
-				// Original exclusionary check (isFloatOrComplex) failed to identify TypeParams.
+				// Only swap operands if the type guarantees total ordering.
+				// Never swap Floats, Complex, or Generic types.
 				isSafeToSwap := func(t types.Type) bool {
 					if basic, ok := t.Underlying().(*types.Basic); ok {
 						return (basic.Info() & (types.IsInteger | types.IsString)) != 0
@@ -118,8 +118,8 @@ func computeVirtualControlFlow(fn *ssa.Function) *virtualControlFlowState {
 	return state
 }
 
-// GenerateFingerprint generates the hash and canonical string representation for an SSA function.
-// This function uses a pooled Canonicalizer to ensure high throughput and low allocation overhead.
+// Produces the SHA256 hash and canonical string representation for an SSA function.
+// Pulls a Canonicalizer from the pool to keep allocations low and throughput high.
 func GenerateFingerprint(fn *ssa.Function, policy LiteralPolicy, strictMode bool) FingerprintResult {
 	// Compute virtual control flow state without mutating
 	virtualCF := computeVirtualControlFlow(fn)
@@ -159,13 +159,13 @@ func GenerateFingerprint(fn *ssa.Function, policy LiteralPolicy, strictMode bool
 	}
 }
 
-// FingerprintSource analyzes a single Go source file provided as a string.
-// This is the primary entry point for verifying code snippets or patch hunks.
+// Analyzes a single Go source file provided as a string. Primary entry point
+// for verifying code snippets or patch hunks.
 func FingerprintSource(filename string, src string, policy LiteralPolicy) ([]FingerprintResult, error) {
 	return FingerprintSourceAdvanced(filename, src, policy, false)
 }
 
-// FingerprintSourceAdvanced provides an extended interface for source analysis with strict mode control.
+// Extended interface for source analysis that exposes strict mode control.
 func FingerprintSourceAdvanced(filename string, src string, policy LiteralPolicy, strictMode bool) ([]FingerprintResult, error) {
 	initialPkgs, err := loadPackagesFromSource(filename, src)
 	if err != nil {
@@ -175,7 +175,7 @@ func FingerprintSourceAdvanced(filename string, src string, policy LiteralPolicy
 	return FingerprintPackages(initialPkgs, policy, strictMode)
 }
 
-// loadPackagesFromSource loads packages from a provided source string for analysis.
+// Loads packages from a provided source string for analysis.
 func loadPackagesFromSource(filename string, src string) ([]*packages.Package, error) {
 	if len(src) == 0 {
 		return nil, fmt.Errorf("input source code is empty")
@@ -189,13 +189,29 @@ func loadPackagesFromSource(filename string, src string) ([]*packages.Package, e
 
 	fset := token.NewFileSet()
 
-	// FIX: Network Hardening / Anti-SSRF.
-	// Explicitly disable the GOPROXY and enable GOPRIVATE to prevent the loader from reaching out
-	// to the network if the analyzed source contains external dependencies.
-	// GOPROXY=off alone is insufficient as it may fall back to direct VCS fetching.
-	// GOPRIVATE=* ensures the tool treats all modules as private and avoids checksum DB lookups.
-	env := os.Environ()
-	env = append(env, "GOPROXY=off", "GOPRIVATE=*", "GONOSUMDB=*")
+	// Defense-in-depth hardening against RCE and SSRF:
+	// CGO_ENABLED=0 prevents RCE via malicious cgo directives.
+	// GOPROXY=off prevents network module fetching.
+	// GOFLAGS=-mod=readonly prevents go.mod/go.sum modification.
+	// GONOSUMDB=* disables checksum database lookups.
+	// GOWORK=off prevents workspace configuration tampering.
+	// Filter env vars case-insensitively to handle platform differences.
+	env := make([]string, 0, len(os.Environ())+6)
+	for _, e := range os.Environ() {
+		upperE := strings.ToUpper(e)
+		switch {
+		case strings.HasPrefix(upperE, "CGO_ENABLED="),
+			strings.HasPrefix(upperE, "GOPROXY="),
+			strings.HasPrefix(upperE, "GOFLAGS="),
+			strings.HasPrefix(upperE, "GONOSUMDB="),
+			strings.HasPrefix(upperE, "GOWORK="),
+			strings.HasPrefix(upperE, "GO111MODULE="):
+			// Skip conflicting variables (case-insensitive check)
+			continue
+		}
+		env = append(env, e)
+	}
+	env = append(env, "CGO_ENABLED=0", "GOPROXY=off", "GOFLAGS=-mod=readonly", "GONOSUMDB=*", "GOWORK=off", "GO111MODULE=on")
 
 	cfg := &packages.Config{
 		Dir:  sourceDir,
@@ -227,7 +243,8 @@ func loadPackagesFromSource(filename string, src string) ([]*packages.Package, e
 	return initialPkgs, nil
 }
 
-// FingerprintPackages iterates over loaded packages to construct SSA and generate results.
+// Walks the loaded packages, builds SSA, and generates fingerprint results for
+// every function we find. Handles methods, closures, and init functions.
 func FingerprintPackages(initialPkgs []*packages.Package, policy LiteralPolicy, strictMode bool) ([]FingerprintResult, error) {
 	if len(initialPkgs) == 0 {
 		return nil, fmt.Errorf("input packages list is empty")
@@ -276,7 +293,8 @@ func FingerprintPackages(initialPkgs []*packages.Package, policy LiteralPolicy, 
 	return results, nil
 }
 
-// processFunctionAndAnons recursively analyzes a function and its nested closures.
+// Recursively analyzes a function and any closures it defines. The visited map
+// prevents infinite loops and duplicate processing.
 func processFunctionAndAnons(fn *ssa.Function, policy LiteralPolicy, strictMode bool, results *[]FingerprintResult, visited map[*ssa.Function]bool) {
 	// Prevent infinite recursion by tracking visited functions.
 	if visited[fn] {

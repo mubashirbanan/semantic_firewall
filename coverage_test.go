@@ -148,7 +148,6 @@ func TestInstructionCoverage(t *testing.T) {
 				`MakeClosure <func_ref:<ANY>:func(int)> [<vN>]`,
 				`Go <vN>(p0)`,
 				// Select statement expectations (deterministic order).
-				// FIX: Updated expectation based on deterministic sorting (Default first, then sorted channels alphabetically: p1 before vN).
 				`Select [non-blocking] (<- <default>) (-> p1 <- const(true)) (<- <vN>)`,
 			},
 		},
@@ -204,7 +203,8 @@ func TestInstructionCoverage(t *testing.T) {
 		`,
 			funcName: "init#1",
 			expected: []string{
-				`Store <global:*int>, const(20)`,
+				// Global variables include package path and name for precision.
+				`Store <global:testmod.GlobalVarB:*int>, const(20)`,
 			},
 		},
 		{

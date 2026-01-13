@@ -1,28 +1,13 @@
-package semanticfw
+package semanticfw_test
 
 import (
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
-)
 
-// Helper function to setup isolated test environment for packages loader
-func setupTestEnv(t *testing.T, dirPrefix string) (string, func()) {
-	t.Helper()
-	tempDir, err := os.MkdirTemp("", dirPrefix)
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	// Create a minimal go.mod with go version for modern language features.
-	if err := os.WriteFile(filepath.Join(tempDir, "go.mod"), []byte("module testmod\n\ngo 1.23\n"), 0644); err != nil {
-		t.Fatalf("Failed to write go.mod: %v", err)
-	}
-	cleanup := func() {
-		os.RemoveAll(tempDir)
-	}
-	return tempDir, cleanup
-}
+	sfw "github.com/BlackVectorOps/semantic_firewall"
+)
 
 // TestCanonicalizationDeterminism verifies that semantically identical functions produce the same canonical IR.
 func TestCanonicalizationDeterminism(t *testing.T) {
@@ -65,10 +50,10 @@ func TestCanonicalizationDeterminism(t *testing.T) {
 				return total
 			}
 			`
-	policy := DefaultLiteralPolicy
+	policy := sfw.DefaultLiteralPolicy
 
 	// Create an isolated environment for the test
-	tempDir, cleanup := setupTestEnv(t, "det-test-")
+	tempDir, cleanup := sfw.SetupTestEnv(t, "det-test-")
 	defer cleanup()
 
 	tempFile := filepath.Join(tempDir, "test.go")
@@ -77,19 +62,18 @@ func TestCanonicalizationDeterminism(t *testing.T) {
 	}
 
 	// Use FingerprintSourceAdvanced which now correctly loads packages internally.
-	results, err := FingerprintSourceAdvanced(tempFile, src, policy, true)
+	results, err := sfw.FingerprintSourceAdvanced(tempFile, src, policy, true)
 	if err != nil {
 		t.Fatalf("Failed to fingerprint source: %v", err)
 	}
 
-	// Uses helpers from helpers_test.go
-	res1 := findResult(results, "calculateTotal")
-	res2 := findResult(results, "sumPrices")
-	res3 := findResult(results, "accumulate")
-	res4 := findResult(results, "commutativeTest")
+	res1 := sfw.FindResult(results, "calculateTotal")
+	res2 := sfw.FindResult(results, "sumPrices")
+	res3 := sfw.FindResult(results, "accumulate")
+	res4 := sfw.FindResult(results, "commutativeTest")
 
 	if res1 == nil || res2 == nil || res3 == nil || res4 == nil {
-		t.Fatalf("Could not find results for all functions. Found: %v", getFunctionNames(results))
+		t.Fatalf("Could not find results for all functions. Found: %v", sfw.GetFunctionNames(results))
 	}
 
 	// V2 (Index loop) vs V3 (Goto loop).
@@ -143,10 +127,10 @@ func TestLiteralPolicy(t *testing.T) {
 	// --- Policy 1: Abstract Everything ---
 	t.Run("Abstract Everything", func(t *testing.T) {
 		// Create isolated environment for this subtest
-		tempDir, cleanup := setupTestEnv(t, "policy-abstract-test-")
+		tempDir, cleanup := sfw.SetupTestEnv(t, "policy-abstract-test-")
 		defer cleanup()
 
-		policyAbstract := LiteralPolicy{
+		policyAbstract := sfw.LiteralPolicy{
 			AbstractControlFlowComparisons: true,
 			KeepReturnStatusValues:         false,
 			KeepSmallIntegerIndices:        false,
@@ -160,15 +144,15 @@ func TestLiteralPolicy(t *testing.T) {
 			t.Fatalf("Failed to write temp file: %v", err)
 		}
 
-		results, err := FingerprintSourceAdvanced(tempFile, src, policyAbstract, true)
+		results, err := sfw.FingerprintSourceAdvanced(tempFile, src, policyAbstract, true)
 		if err != nil {
 			t.Fatalf("Failed during abstract policy test: %v", err)
 		}
 
 		// Find the specific function result, as init functions might also be present due to GlobalSink.
-		res := findResult(results, "checkThreshold")
+		res := sfw.FindResult(results, "checkThreshold")
 		if res == nil {
-			t.Fatalf("Could not find result for checkThreshold. Found: %v", getFunctionNames(results))
+			t.Fatalf("Could not find result for checkThreshold. Found: %v", sfw.GetFunctionNames(results))
 		}
 		ir := res.CanonicalIR
 
@@ -198,25 +182,25 @@ func TestLiteralPolicy(t *testing.T) {
 	// --- Policy 2: Default Behavior ---
 	t.Run("Default Policy", func(t *testing.T) {
 		// Create isolated environment for this subtest
-		tempDir, cleanup := setupTestEnv(t, "policy-keep-test-")
+		tempDir, cleanup := sfw.SetupTestEnv(t, "policy-keep-test-")
 		defer cleanup()
 
-		policyKeep := DefaultLiteralPolicy // AbstractOtherTypes=true by default
+		policyKeep := sfw.DefaultLiteralPolicy // AbstractOtherTypes=true by default
 
 		tempFile := filepath.Join(tempDir, "test_keep.go")
 		if err := os.WriteFile(tempFile, []byte(src), 0644); err != nil {
 			t.Fatalf("Failed to write temp file: %v", err)
 		}
 
-		results, err := FingerprintSourceAdvanced(tempFile, src, policyKeep, true)
+		results, err := sfw.FingerprintSourceAdvanced(tempFile, src, policyKeep, true)
 		if err != nil {
 			t.Fatalf("Failed during keep policy test: %v", err)
 		}
 
 		// Find the specific function result.
-		res := findResult(results, "checkThreshold")
+		res := sfw.FindResult(results, "checkThreshold")
 		if res == nil {
-			t.Fatalf("Could not find result for checkThreshold. Found: %v", getFunctionNames(results))
+			t.Fatalf("Could not find result for checkThreshold. Found: %v", sfw.GetFunctionNames(results))
 		}
 		ir := res.CanonicalIR
 

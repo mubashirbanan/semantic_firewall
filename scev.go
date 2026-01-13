@@ -12,24 +12,24 @@ import (
 
 // -- Section 4: Scalar Evolution (SCEV) Framework --
 
-// Renamer is a function that maps an SSA value to its canonical name.
-// This is used to ensure deterministic output regardless of SSA register naming.
+// Maps an SSA value to its canonical name. Ensures deterministic output
+// regardless of SSA register naming.
 type Renamer func(ssa.Value) string
 
-// SCEV represents a scalar expression.
+// Represents a scalar expression in the SCEV lattice.
 type SCEV interface {
 	ssa.Value
 	EvaluateAt(k *big.Int) *big.Int
 	IsLoopInvariant(loop *Loop) bool
 	String() string
-	// StringWithRenamer returns a canonical string using the provided renamer
-	// function to map SSA values to their canonical names (e.g., v0, v1).
-	// This is critical for determinism: without it, raw SSA names (t0, t1)
-	// would leak into fingerprints, breaking semantic equivalence.
+	// Returns a canonical string using the provided renamer function to map
+	// SSA values to their canonical names (e.g., v0, v1). Critical for determinism:
+	// without it, raw SSA names (t0, t1) would leak into fingerprints, breaking
+	// semantic equivalence.
 	StringWithRenamer(r Renamer) string
 }
 
-// SCEVAddRec represents an Add Recurrence: {Start, +, Step}_L
+// Represents an Add Recurrence: {Start, +, Step}_L
 // Reference: Section 4.1 The Add Recurrence Abstraction.
 type SCEVAddRec struct {
 	Start SCEV
@@ -71,7 +71,7 @@ func (s *SCEVAddRec) Parent() *ssa.Function         { return nil }
 func (s *SCEVAddRec) Referrers() *[]ssa.Instruction { return nil }
 func (s *SCEVAddRec) Pos() token.Pos                { return token.NoPos }
 
-// SCEVConstant represents a literal integer constant.
+// Represents a literal integer constant.
 type SCEVConstant struct {
 	Value *big.Int
 }
@@ -93,7 +93,7 @@ func (s *SCEVConstant) Parent() *ssa.Function         { return nil }
 func (s *SCEVConstant) Referrers() *[]ssa.Instruction { return nil }
 func (s *SCEVConstant) Pos() token.Pos                { return token.NoPos }
 
-// SCEVUnknown represents a symbolic value (e.g., parameter or unanalyzable instr).
+// Represents a symbolic value (e.g., parameter or unanalyzable instruction).
 type SCEVUnknown struct {
 	Value       ssa.Value
 	IsInvariant bool // Explicitly tracks invariance relative to the analysis loop scope
@@ -154,7 +154,7 @@ func (s *SCEVUnknown) Parent() *ssa.Function         { return nil }
 func (s *SCEVUnknown) Referrers() *[]ssa.Instruction { return nil }
 func (s *SCEVUnknown) Pos() token.Pos                { return token.NoPos }
 
-// SCEVGenericExpr represents binary operations like Add/Mul for formulas.
+// Represents binary operations like Add/Mul for formulas.
 type SCEVGenericExpr struct {
 	Op token.Token
 	X  SCEV
@@ -182,7 +182,7 @@ func (s *SCEVGenericExpr) Pos() token.Pos                { return token.NoPos }
 
 // -- Analysis Algorithms --
 
-// AnalyzeSCEV is the main entry point for SCEV analysis on a LoopInfo.
+// Main entry point for SCEV analysis on a LoopInfo.
 func AnalyzeSCEV(info *LoopInfo) {
 	for _, loop := range info.Loops {
 		analyzeLoopRecursively(loop)
@@ -202,14 +202,12 @@ func analyzeLoopRecursively(loop *Loop) {
 	deriveTripCount(loop)
 }
 
-// identifyInductionVariables implements the SCC-based IV detection.
+// Implements the SCC based IV detection.
 // Reference: Section 3.3 Algorithm: Identification in semanticfw.
 func identifyInductionVariables(loop *Loop) {
 	// 1. Collect Loop Instructions
 	var loopInstrs []ssa.Instruction
-	// BUG FIX: Iterate over function blocks to ensure deterministic order.
-	// Previous implementation iterated over loop.Blocks (map), which caused
-	// non-deterministic SCC finding and IV classification.
+	// Iterate over function blocks for deterministic order.
 	for _, block := range loop.Header.Parent().Blocks {
 		if loop.Blocks[block] {
 			loopInstrs = append(loopInstrs, block.Instrs...)
@@ -238,7 +236,7 @@ func identifyInductionVariables(loop *Loop) {
 	}
 }
 
-// findLoopSCCs implements Tarjan's algorithm restricted to the loop body.
+// Implements Tarjan's algorithm restricted to the loop body.
 func findLoopSCCs(loop *Loop, instrs []ssa.Instruction) [][]ssa.Instruction {
 	var sccs [][]ssa.Instruction
 	index := 0
@@ -297,12 +295,15 @@ func findLoopSCCs(loop *Loop, instrs []ssa.Instruction) [][]ssa.Instruction {
 }
 
 func classifyIV(loop *Loop, phi *ssa.Phi, scc []ssa.Instruction) {
-	// Look for the update operation: BinOp in the SCC
+	// Find the update operation: BinOp in the SCC that directly uses the Phi node.
 	var binOp *ssa.BinOp
 	for _, instr := range scc {
 		if op, ok := instr.(*ssa.BinOp); ok {
-			binOp = op
-			break
+			// Check if this BinOp directly uses the Phi node
+			if op.X == phi || op.Y == phi {
+				binOp = op
+				break
+			}
 		}
 	}
 
@@ -315,10 +316,7 @@ func classifyIV(loop *Loop, phi *ssa.Phi, scc []ssa.Instruction) {
 	if binOp.X == phi {
 		stepVal = binOp.Y
 	} else if binOp.Y == phi {
-		// BUG FIX: Logic Inversion/Semantic Corruption.
-		// For SUB, Y == phi means (C - Phi). This is NOT a linear induction variable.
-		// It creates an oscillating sequence (or divergent).
-		// Treating it as Basic IV {Start, +, C} is a semantic error.
+		// For SUB, (C - Phi) is not a linear IV. Reject this pattern.
 		if binOp.Op == token.SUB {
 			return
 		}
@@ -399,10 +397,10 @@ func classifyIV(loop *Loop, phi *ssa.Phi, scc []ssa.Instruction) {
 	loop.Inductions[phi] = iv
 }
 
-// deriveTripCount implements Algorithm from Section 5.2.
-// TripCount formula: ⌈(Limit - Start) / Step⌉ for up-counting loops (i < N)
+// Implements Algorithm from Section 5.2.
+// TripCount formula: ⌈(Limit - Start) / Step⌉ for up counting loops (i < N)
 //
-//	⌈(Start - Limit) / |Step|⌉ for down-counting loops (i > N)
+//	⌈(Start - Limit) / |Step|⌉ for down counting loops (i > N)
 func deriveTripCount(loop *Loop) {
 	// Simplify: Single Exit loops only
 	if len(loop.Exits) != 1 {
@@ -429,13 +427,23 @@ func deriveTripCount(loop *Loop) {
 	// Validate comparison operator - we only handle relational comparisons
 	var isUpCounting bool
 	var ivOnLeft bool
+	var isInclusive bool
+
 	switch binOp.Op {
-	case token.LSS, token.LEQ: // i < N or i <= N (up-counting when IV is on left)
+	case token.LSS: // i < N
 		isUpCounting = true
 		ivOnLeft = true
-	case token.GTR, token.GEQ: // i > N or i >= N (down-counting when IV is on left)
+	case token.LEQ: // i <= N (inclusive)
+		isUpCounting = true
+		ivOnLeft = true
+		isInclusive = true
+	case token.GTR: // i > N
 		isUpCounting = false
 		ivOnLeft = true
+	case token.GEQ: // i >= N (inclusive)
+		isUpCounting = false
+		ivOnLeft = true
+		isInclusive = true
 	case token.EQL, token.NEQ:
 		// Equality comparisons are harder to analyze; bail out
 		loop.TripCount = &SCEVUnknown{Value: nil}
@@ -518,19 +526,35 @@ func deriveTripCount(loop *Loop) {
 		diff = foldSCEV(token.ADD, iv.Start, negLimit, loop)
 	}
 
+	// Adjust for inclusive loops: range is [Start, Limit], span is (Limit - Start) + 1.
+	if isInclusive {
+		diff = foldSCEV(token.ADD, diff, &SCEVConstant{Value: big.NewInt(1)}, loop)
+	}
+
+	// Negative diff means loop executes 0 times.
+	if dConst, ok := diff.(*SCEVConstant); ok {
+		if dConst.Value.Sign() < 0 {
+			loop.TripCount = &SCEVConstant{Value: big.NewInt(0)}
+			return
+		}
+	}
+
 	// For down-counting loops, use absolute value of step
 	var effectiveStep SCEV = iv.Step
 	if !isUpCounting && stepIsConst && stepConst.Value.Sign() < 0 {
 		effectiveStep = &SCEVConstant{Value: new(big.Int).Abs(stepConst.Value)}
 	}
 
-	// TripCount = Ceiling(Diff / Step)
-	// BUG FIX: Correct Ceiling Division Formula: (Diff + Step - 1) / Step
-	// Previously used integer truncation which is incorrect for strided loops.
+	// TripCount = Ceiling(Diff / Step) = (Diff + Step - 1) / Step
 	dConst, dOk := diff.(*SCEVConstant)
 	sConst, sOk := effectiveStep.(*SCEVConstant)
 
 	if dOk && sOk && sConst.Value.Sign() > 0 {
+		// Clamp trip count to 0 for non-executing loops.
+		if dConst.Value.Sign() <= 0 {
+			loop.TripCount = &SCEVConstant{Value: big.NewInt(0)}
+			return
+		}
 		num := new(big.Int).Add(dConst.Value, sConst.Value)
 		num.Sub(num, big.NewInt(1))
 		res := new(big.Int).Div(num, sConst.Value)
@@ -543,6 +567,21 @@ func deriveTripCount(loop *Loop) {
 }
 
 func toSCEV(v ssa.Value, loop *Loop) SCEV {
+	// Check cache to prevent exponential complexity in deep expression DAGs.
+	if loop.SCEVCache == nil {
+		loop.SCEVCache = make(map[ssa.Value]SCEV)
+	}
+	if cached, ok := loop.SCEVCache[v]; ok {
+		return cached
+	}
+
+	// Compute result and ensure it is cached before returning
+	res := computeSCEV(v, loop)
+	loop.SCEVCache[v] = res
+	return res
+}
+
+func computeSCEV(v ssa.Value, loop *Loop) SCEV {
 	// Handle constants first - they are always loop invariant
 	if c, ok := v.(*ssa.Const); ok {
 		return SCEVFromConst(c)
@@ -605,8 +644,8 @@ func SCEVFromConst(c *ssa.Const) *SCEVConstant {
 	return &SCEVConstant{Value: big.NewInt(0)}
 }
 
-// foldSCEV attempts to simplify a binary operation on two SCEV expressions.
-// It implements constant folding and AddRec simplification rules.
+// Attempts to simplify a binary operation on two SCEV expressions.
+// Implements constant folding and AddRec simplification rules.
 func foldSCEV(op token.Token, left, right SCEV, loop *Loop) SCEV {
 	// Rule 1: Constant + Constant -> New Constant
 	lConst, lIsConst := left.(*SCEVConstant)

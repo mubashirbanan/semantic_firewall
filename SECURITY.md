@@ -8,13 +8,9 @@ I adhere to Semantic Versioning. Security patches will be backported to the curr
 
 
 | Version | Supported | Status |
-
 | :--- | :---: | :--- |
-
-| 1.1.x | :white_check_mark: | **Active Support.** Current release with SCEV and Zipper. |
-
-| 1.0.x | :white_check_mark: | **Maintenance.** Security patches only. |
-
+| 2.0.x | :white_check_mark: | **Active Support.** Malware Scanner, BoltDB, Entropy Engine. |
+| 1.x.x | :warning:          | **Maintenance.** Diff/Check features only. |
 | < 1.0 | :x: | **End of Life.** Pre-release versions are not supported. |
 
 

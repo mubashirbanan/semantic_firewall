@@ -2,6 +2,7 @@ package semanticfw
 
 import (
 	"fmt"
+	"go/token"
 	"go/types"
 	"reflect"
 	"sort"
@@ -9,7 +10,8 @@ import (
 	"golang.org/x/tools/go/ssa"
 )
 
-// ZipperArtifacts encapsulates the results of the semantic delta analysis.
+// Output from the semantic delta analysis. Shows what instructions were added,
+// removed, or matched between two function versions.
 type ZipperArtifacts struct {
 	OldFunction  string
 	NewFunction  string
@@ -19,7 +21,8 @@ type ZipperArtifacts struct {
 	Preserved    bool
 }
 
-// Zipper implements the semantic delta analysis algorithm.
+// Implements the semantic delta analysis algorithm. Walks the use def chains
+// of two functions in parallel, aligning equivalent nodes and isolating divergence.
 type Zipper struct {
 	oldFn *ssa.Function
 	newFn *ssa.Function
@@ -42,9 +45,8 @@ type valuePair struct {
 	new ssa.Value
 }
 
-// NewZipper creates a new analysis session.
+// Creates a new analysis session between two function versions.
 func NewZipper(oldFn, newFn *ssa.Function, policy LiteralPolicy) (*Zipper, error) {
-	// SECURITY: Input validation prevents panic on nil inputs
 	if oldFn == nil || newFn == nil {
 		return nil, fmt.Errorf("cannot analyze nil functions")
 	}
@@ -59,7 +61,8 @@ func NewZipper(oldFn, newFn *ssa.Function, policy LiteralPolicy) (*Zipper, error
 	}, nil
 }
 
-// ComputeDiff executes the Zipper Algorithm Phases.
+// Runs through all four phases of the Zipper algorithm: semantic analysis,
+// anchor alignment, forward propagation, and divergence isolation.
 func (z *Zipper) ComputeDiff() (*ZipperArtifacts, error) {
 	// PHASE 0: Semantic Analysis
 	z.oldCanon = AcquireCanonicalizer(z.policy)
@@ -81,15 +84,15 @@ func (z *Zipper) ComputeDiff() (*ZipperArtifacts, error) {
 	z.propagate()
 
 	// PHASE 2.5: Scavenge Terminators
-	// BUG FIX: Explicitly match sinks/returns here using semantic checks
-	// instead of blind index matching in the anchor phase.
+	// Match sinks/returns using semantic checks.
 	z.matchTerminators()
 
 	// PHASE 3: Divergence Isolation
 	return z.isolateDivergence(), nil
 }
 
-// alignAnchors establishes deterministic starting points.
+// Establishes deterministic starting points by mapping parameters and free
+// variables between the two functions.
 func (z *Zipper) alignAnchors() error {
 	// 1. Signature Parity Check
 	if len(z.oldFn.Params) != len(z.newFn.Params) {
@@ -115,13 +118,57 @@ func (z *Zipper) alignAnchors() error {
 		}
 	}
 
-	// NOTE: mapReturns removed. Returns are handled in matchTerminators.
+	// 4. Align Entry Blocks (Handling functions with no params like main/init)
+	// Seed the queue by matching constant-only instructions in the entry block.
+	z.alignEntryBlock()
 
 	return nil
 }
 
-// matchTerminators identifies and pairs terminators (returns, panics)
-// whose operands are strictly equivalent.
+// Matches instructions in the entry block sequentially. Critical for functions
+// like main() that have no parameters to serve as anchors.
+func (z *Zipper) alignEntryBlock() {
+	if len(z.oldFn.Blocks) == 0 || len(z.newFn.Blocks) == 0 {
+		return
+	}
+
+	// Only process the Entry Block (Index 0)
+	// Instructions here are guaranteed to dominate the rest of the function
+	bOld := z.oldFn.Blocks[0]
+	bNew := z.newFn.Blocks[0]
+
+	// Conservative approach: Match sequentially from the top until divergence.
+	// This works because the start of the entry block is a fixed point.
+	limit := len(bOld.Instrs)
+	if len(bNew.Instrs) < limit {
+		limit = len(bNew.Instrs)
+	}
+
+	for i := 0; i < limit; i++ {
+		iOld := bOld.Instrs[i]
+		iNew := bNew.Instrs[i]
+
+		// Skip instructions already mapped (though unlikely in entry block start)
+		if _, mapped := z.instrMap[iOld]; mapped {
+			continue
+		}
+
+		// Check strict equivalence
+		if z.areEquivalent(iOld, iNew) {
+			z.recordInstrMatch(iOld, iNew)
+			if vOld, okOld := iOld.(ssa.Value); okOld {
+				if vNew, okNew := iNew.(ssa.Value); okNew {
+					z.mapValue(vOld, vNew)
+				}
+			}
+		} else {
+			// Stop at first mismatch to avoid false pairings
+			break
+		}
+	}
+}
+
+// Identifies and pairs terminators (returns, panics) whose operands match.
 func (z *Zipper) matchTerminators() {
 	collect := func(fn *ssa.Function) []ssa.Instruction {
 		var terms []ssa.Instruction
@@ -140,7 +187,7 @@ func (z *Zipper) matchTerminators() {
 	z.matchUsers(oldTerms, newTerms)
 }
 
-// mapValue registers a match between values and schedules propagation.
+// Registers a match between values and queues them for propagation.
 func (z *Zipper) mapValue(old, new ssa.Value) {
 	if _, exists := z.valMap[old]; exists {
 		return
@@ -163,7 +210,7 @@ func (z *Zipper) recordInstrMatch(old, new ssa.Instruction) {
 	z.revInstrMap[new] = old
 }
 
-// propagate traverses Use-Def chains to zip dependent nodes.
+// Traverses use def chains to zip dependent nodes together.
 func (z *Zipper) propagate() {
 	for len(z.queue) > 0 {
 		curr := z.queue[0]
@@ -180,10 +227,14 @@ func (z *Zipper) propagate() {
 	}
 }
 
-// matchUsers attempts to pair users of mapped values.
+// Limits comparison candidates per fingerprint bucket. Prevents algorithmic DoS
+// where malicious inputs with thousands of identical operations could cause O(N*M)
+// comparisons. With this limit, worst case becomes O(N * MaxCandidates) which is linear.
+const MaxCandidates = 100
+
+// Pairs users of mapped values using structural fingerprints for bucketing.
 func (z *Zipper) matchUsers(usersOld, usersNew []ssa.Instruction) {
-	// SECURITY FIX: Bucket users by Structural Fingerprint to prevent O(N*M) DoS
-	// on high-fanout values.
+	// Bucket users by structural fingerprint for efficient lookup.
 	newByOp := make(map[string][]ssa.Instruction)
 	for _, u := range usersNew {
 		if _, mapped := z.revInstrMap[u]; mapped {
@@ -191,7 +242,10 @@ func (z *Zipper) matchUsers(usersOld, usersNew []ssa.Instruction) {
 		}
 		// Fingerprint excludes register names for stability
 		fp := getFingerprint(u)
-		newByOp[fp] = append(newByOp[fp], u)
+		// Cap bucket size to prevent quadratic blowup.
+		if len(newByOp[fp]) < MaxCandidates {
+			newByOp[fp] = append(newByOp[fp], u)
+		}
 	}
 
 	sortInstrs(usersOld)
@@ -223,7 +277,7 @@ func (z *Zipper) matchUsers(usersOld, usersNew []ssa.Instruction) {
 	}
 }
 
-// areEquivalent checks if two instructions are semantically isomorphic.
+// Checks whether two instructions are semantically isomorphic.
 func (z *Zipper) areEquivalent(a, b ssa.Instruction) bool {
 	// 1. Structural Identity (Go Type)
 	if reflect.TypeOf(a) != reflect.TypeOf(b) {
@@ -270,7 +324,6 @@ func (z *Zipper) compareOps(a, b ssa.Instruction) bool {
 	case *ssa.FieldAddr:
 		iB := b.(*ssa.FieldAddr)
 		return iA.Field == iB.Field
-	// BUG FIX: Add missing semantic checks
 	case *ssa.Alloc:
 		iB := b.(*ssa.Alloc)
 		return iA.Heap == iB.Heap
@@ -280,8 +333,49 @@ func (z *Zipper) compareOps(a, b ssa.Instruction) bool {
 	case *ssa.Select:
 		iB := b.(*ssa.Select)
 		return iA.Blocking == iB.Blocking
+	// Type equality checks for type-defining instructions.
+	case *ssa.ChangeType:
+		iB := b.(*ssa.ChangeType)
+		return types.Identical(iA.Type(), iB.Type())
+	case *ssa.Convert:
+		iB := b.(*ssa.Convert)
+		return types.Identical(iA.Type(), iB.Type())
+	case *ssa.MakeInterface:
+		iB := b.(*ssa.MakeInterface)
+		return types.Identical(iA.Type(), iB.Type())
+	case *ssa.TypeAssert:
+		iB := b.(*ssa.TypeAssert)
+		return types.Identical(iA.AssertedType, iB.AssertedType) && iA.CommaOk == iB.CommaOk
+	case *ssa.MakeSlice:
+		iB := b.(*ssa.MakeSlice)
+		return types.Identical(iA.Type(), iB.Type())
+	case *ssa.MakeMap:
+		iB := b.(*ssa.MakeMap)
+		return types.Identical(iA.Type(), iB.Type())
+	case *ssa.MakeChan:
+		iB := b.(*ssa.MakeChan)
+		return types.Identical(iA.Type(), iB.Type())
+	case *ssa.Slice:
+		// Slice operations are structurally identical if types match
+		iB := b.(*ssa.Slice)
+		return types.Identical(iA.Type(), iB.Type())
+	case *ssa.ChangeInterface:
+		iB := b.(*ssa.ChangeInterface)
+		return types.Identical(iA.Type(), iB.Type())
+	case *ssa.SliceToArrayPointer:
+		iB := b.(*ssa.SliceToArrayPointer)
+		return types.Identical(iA.Type(), iB.Type())
 	}
 	return true
+}
+
+// Returns true if the given token represents a commutative operation.
+func isCommutativeOp(op token.Token) bool {
+	switch op {
+	case token.ADD, token.MUL, token.AND, token.OR, token.XOR, token.EQL, token.NEQ:
+		return true
+	}
+	return false
 }
 
 func (z *Zipper) compareOperands(a, b ssa.Instruction) bool {
@@ -290,6 +384,15 @@ func (z *Zipper) compareOperands(a, b ssa.Instruction) bool {
 
 	if len(opsA) != len(opsB) {
 		return false
+	}
+
+	// Handle commutativity for binary operations.
+	if binOp, ok := a.(*ssa.BinOp); ok && isCommutativeOp(binOp.Op) && len(opsA) == 2 {
+		if !z.compareOperandPair(opsA[0], opsA[1], opsB[0], opsB[1]) {
+			// Try swapped order: A[0]<->B[1], A[1]<->B[0]
+			return z.compareOperandPair(opsA[0], opsA[1], opsB[1], opsB[0])
+		}
+		return true
 	}
 
 	for i, ptrA := range opsA {
@@ -321,12 +424,17 @@ func (z *Zipper) compareOperands(a, b ssa.Instruction) bool {
 		if isLinkable {
 			// If it's a Phi node, we allow unmapped operands (Back-edges).
 			if _, isPhi := a.(*ssa.Phi); isPhi {
-				// SECURITY FIX: Ensure valB is ALSO linkable.
-				// Do not allow matching a dynamic variable with a constant.
-				if z.isLinkable(valB) {
-					continue
+				// Ensure valB is also linkable.
+				if !z.isLinkable(valB) {
+					return false
 				}
-				return false
+				// Verify types match for unmapped Phi operands.
+				if valA.Type() != nil && valB.Type() != nil {
+					if !types.Identical(valA.Type(), valB.Type()) {
+						return false
+					}
+				}
+				continue
 			}
 			return false
 		}
@@ -348,6 +456,42 @@ func (z *Zipper) isLinkable(v ssa.Value) bool {
 		return true
 	}
 	return false
+}
+
+// Checks if operand pairs match (ptrA0<->ptrB0, ptrA1<->ptrB1).
+func (z *Zipper) compareOperandPair(ptrA0, ptrA1, ptrB0, ptrB1 *ssa.Value) bool {
+	return z.compareOneOperand(ptrA0, ptrB0) && z.compareOneOperand(ptrA1, ptrB1)
+}
+
+// Checks if a single operand pair matches.
+func (z *Zipper) compareOneOperand(ptrA, ptrB *ssa.Value) bool {
+	if ptrA == nil || ptrB == nil {
+		return false
+	}
+	valA := *ptrA
+	valB := *ptrB
+
+	if valA == nil && valB == nil {
+		return true
+	}
+	if valA == nil || valB == nil {
+		return false
+	}
+
+	// Case 1: Value is already mapped
+	if mappedB, ok := z.valMap[valA]; ok {
+		return mappedB == valB
+	}
+
+	// Case 2: Unmapped linkable values are not allowed in non-Phi context
+	if z.isLinkable(valA) {
+		return false
+	}
+
+	// Case 3: Literals - compare canonical forms
+	canonA := z.oldCanon.normalizeOperand(valA, nil)
+	canonB := z.newCanon.normalizeOperand(valB, nil)
+	return canonA == canonB
 }
 
 func (z *Zipper) isolateDivergence() *ZipperArtifacts {
@@ -398,7 +542,7 @@ type instrSorter []ssa.Instruction
 func (s instrSorter) Len() int      { return len(s) }
 func (s instrSorter) Swap(i, j int) { s[i], s[j] = s[j], s[i] }
 func (s instrSorter) Less(i, j int) bool {
-	// FIX: Sort by fingerprint (Type+Op) instead of volatile register names.
+	// Sort by fingerprint instead of volatile register names.
 	fi := getFingerprint(s[i])
 	fj := getFingerprint(s[j])
 	if fi != fj {
@@ -409,7 +553,9 @@ func (s instrSorter) Less(i, j int) bool {
 }
 
 func getFingerprint(instr ssa.Instruction) string {
-	// Generates a signature independent of register allocation
+	// Generates a signature independent of register allocation.
+	// Includes instruction-specific details and call targets to ensure distinct
+	// operations fall into different buckets.
 	key := fmt.Sprintf("%T", instr)
 	switch i := instr.(type) {
 	case *ssa.BinOp:
@@ -420,8 +566,41 @@ func getFingerprint(instr ssa.Instruction) string {
 		if i.Call.IsInvoke() {
 			key += ":invoke:" + i.Call.Method.Name()
 		} else {
-			key += ":call"
+			// Include call target to differentiate distinct static calls
+			switch v := i.Call.Value.(type) {
+			case *ssa.Function:
+				key += ":call:" + v.RelString(nil)
+			case *ssa.Builtin:
+				key += ":builtin:" + v.Name()
+			case *ssa.MakeClosure:
+				if fn, ok := v.Fn.(*ssa.Function); ok {
+					key += ":closure:" + fn.Signature.String()
+				} else {
+					key += ":closure"
+				}
+			default:
+				// Dynamic call - use type signature for some differentiation
+				if i.Call.Value != nil {
+					key += ":dynamic:" + i.Call.Value.Type().String()
+				} else {
+					key += ":call"
+				}
+			}
 		}
+	case *ssa.Alloc:
+		// Distinguish allocation types (e.g., new(int) vs new(float))
+		key += ":" + i.Type().String()
+	case *ssa.Field:
+		// Distinguish field accesses
+		key += fmt.Sprintf(":field:%d", i.Field)
+	case *ssa.FieldAddr:
+		key += fmt.Sprintf(":fieldaddr:%d", i.Field)
+	case *ssa.Index:
+		key += ":index"
+	case *ssa.IndexAddr:
+		key += ":indexaddr"
+	case *ssa.Store:
+		key += ":store"
 	}
 	return key
 }

@@ -38,8 +38,7 @@ func TestBugFixes(t *testing.T) {
 			t.Fatalf("Analysis failed: %v", err)
 		}
 
-		// FIX: Use findResult instead of hardcoding index 0.
-		// The results may now contain synthetic init functions.
+		// The results may contain synthetic init functions.
 		res := findResult(results, "testLoop")
 		if res == nil {
 			t.Fatalf("Function 'testLoop' not found in results: %v", getFunctionNames(results))
@@ -65,9 +64,7 @@ func TestBugFixes(t *testing.T) {
 		tempDir, cleanup := setupTestEnv(t, "bug2-")
 		defer cleanup()
 
-		// FIX: The -1 to 0 normalization was removed because it caused semantic corruption.
-		// This test now verifies that 0-indexed loops have their increment sunk to the latch block.
-		// We test a standard 0-indexed loop instead of a -1 loop.
+		// Test that 0-indexed loops have their increment sunk to the latch block.
 		src := `package main
 		func test() {
 			for i := 0; i < 10; i++ {}
@@ -83,7 +80,6 @@ func TestBugFixes(t *testing.T) {
 			t.Fatalf("Analysis failed: %v", err)
 		}
 
-		// FIX: Use findResult to target the specific function.
 		res := findResult(results, "test")
 		if res == nil {
 			t.Fatalf("Function 'test' not found in results: %v", getFunctionNames(results))
@@ -119,7 +115,6 @@ func TestBugFixes(t *testing.T) {
 			t.Fatalf("Analysis failed: %v", err)
 		}
 
-		// FIX: Use findResult for both functions.
 		res1 := findResult(results, "s1")
 		res2 := findResult(results, "s2")
 

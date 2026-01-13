@@ -12,7 +12,6 @@ import (
 
 // TestIsTargetConstTypeMismatch verifies that isTargetConst doesn't panic
 // when comparing constants of different types (e.g., string vs int).
-// BUG FIX: Previously, constant.Compare would panic when given mismatched types.
 func TestIsTargetConstTypeMismatch(t *testing.T) {
 	// This code creates a scenario where the loop normalization logic
 	// might encounter a Phi node with a string constant, which previously
@@ -69,7 +68,6 @@ func stringLoop() {
 
 // TestPhiEdgeMalformedBlockID verifies that writePhi handles edge cases
 // where predecessor blocks have invalid or empty IDs without panicking.
-// BUG FIX: Previously, strconv.Atoi on empty string caused index out of bounds.
 func TestPhiEdgeMalformedBlockID(t *testing.T) {
 	// This is a functional test that exercises the Phi handling code path.
 	// The fix ensures that empty or malformed block IDs don't cause panics.
@@ -112,7 +110,6 @@ func phiTest(cond bool) int {
 
 // TestVirtualSubstitutionCycleDetection verifies that the cycle detection
 // in normalizeOperand prevents infinite loops with circular substitutions.
-// BUG FIX: Previously used arbitrary 100-iteration limit; now uses proper cycle detection.
 func TestVirtualSubstitutionCycleDetection(t *testing.T) {
 	// This test verifies that deeply nested expressions don't cause issues.
 	// The cycle detection ensures we don't get stuck in infinite loops.
@@ -158,7 +155,6 @@ func deepNesting() int {
 }
 
 // TestNilBlockSuccessors verifies that getVirtualSuccessors handles nil blocks safely.
-// BUG FIX: Added nil check to prevent nil pointer dereference.
 func TestNilBlockSuccessors(t *testing.T) {
 	// This is tested indirectly through normal fingerprinting operations.
 	// The fix ensures nil blocks don't cause panics in getVirtualSuccessors.
@@ -197,7 +193,6 @@ func nilBlockTest(x int) int {
 
 // TestCanonicalizerPoolDataIsolation verifies that the sync.Pool implementation
 // properly isolates data between different fingerprinting sessions.
-// SECURITY FIX: fullReset now called in ReleaseCanonicalizer to prevent data leakage.
 func TestCanonicalizerPoolDataIsolation(t *testing.T) {
 	tempDir, cleanup := setupTestEnv(t, "isolation-")
 	defer cleanup()
@@ -256,7 +251,6 @@ func publicFunction() int {
 }
 
 // TestConcurrentPoolUsage verifies thread safety of the canonicalizer pool.
-// SECURITY: Ensures no race conditions when multiple goroutines use the pool.
 func TestConcurrentPoolUsage(t *testing.T) {
 	tempDir, cleanup := setupTestEnv(t, "concurrent-")
 	defer cleanup()
@@ -302,7 +296,6 @@ func func4() int { return 4 }`,
 }
 
 // TestReleaseNilCanonicalizer verifies that ReleaseCanonicalizer handles nil safely.
-// BUG FIX: Added nil check to prevent nil pointer dereference.
 func TestReleaseNilCanonicalizer(t *testing.T) {
 	// This should not panic
 	defer func() {
@@ -315,7 +308,6 @@ func TestReleaseNilCanonicalizer(t *testing.T) {
 }
 
 // TestComplexPhiNodeTypes verifies handling of Phi nodes with various value types.
-// BUG FIX: Ensures type checking prevents panics in constant comparisons.
 func TestComplexPhiNodeTypes(t *testing.T) {
 	src := `package main
 

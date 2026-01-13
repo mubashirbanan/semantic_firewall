@@ -58,7 +58,7 @@ func main() {
 	tmpDir := os.TempDir()
 
 	// 1. Analyze
-	// Note: We use the advanced policy to ensure we capture the logic correctly
+
 	resRange, err := semanticfw.FingerprintSource(filepath.Join(tmpDir, "range.go"), srcRange, semanticfw.DefaultLiteralPolicy)
 	if err != nil {
 		log.Fatalf("Failed to analyze range loop: %v", err)

@@ -8,7 +8,6 @@ import (
 )
 
 // TestChangeInterface verifies that interface-to-interface conversions are handled.
-// BUG FIX: Previously unhandled *ssa.ChangeInterface would panic in strict mode.
 func TestChangeInterface(t *testing.T) {
 	src := `package main
 import "io"
@@ -43,7 +42,6 @@ func changeInterface(r io.Reader) interface{} {
 }
 
 // TestSliceToArrayPointer verifies slice-to-array-pointer conversions are handled.
-// BUG FIX: Go 1.20+ feature was previously unhandled.
 func TestSliceToArrayPointer(t *testing.T) {
 	src := `package main
 
@@ -80,9 +78,7 @@ func sliceToArray(s []int) *[4]int {
 }
 
 // TestComplexNumberNormalization verifies that complex number comparisons are NOT normalized.
-// BUG FIX: Complex numbers have undefined ordering, similar to NaN for floats.
-// Note: Go doesn't allow < > <= >= on complex types, so we test that the NaN check
-// logic also includes the IsComplex flag (this is a defensive fix).
+// Complex numbers have undefined ordering, similar to NaN for floats.
 func TestComplexNumberNormalization(t *testing.T) {
 	// We can test the fix indirectly by verifying float behavior still works
 	src := `package main
@@ -390,7 +386,6 @@ func indexLoop(items []int) int {
 
 // TestFloatComparisonRightOperand verifies that float comparisons are NOT normalized
 // when the float is on the RIGHT side of the comparison (e.g., "0 >= floatVar").
-// BUG FIX: Previously only the left operand was checked for float/complex types.
 func TestFloatComparisonRightOperand(t *testing.T) {
 	// This test specifically targets the bug where "const >= floatVar" would be
 	// incorrectly normalized because only binOp.X was checked for float type.

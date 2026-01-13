@@ -13,20 +13,20 @@ import (
 	"golang.org/x/tools/go/ssa"
 )
 
-// virtualInstr represents an instruction's virtual location after normalization.
+// Represents an instruction's virtual location after normalization.
 type virtualInstr struct {
 	instr        ssa.Instruction
 	virtualBlock *ssa.BasicBlock
 }
 
-// virtualBlock represents a block's virtual state after normalization.
+// Represents a block's virtual state after normalization.
 type virtualBlock struct {
 	block        *ssa.BasicBlock
 	virtualSuccs [2]*ssa.BasicBlock
 	swapped      bool
 }
 
-// canonicalizerPool manages reusable Canonicalizer instances.
+// Manages reusable Canonicalizer instances.
 var canonicalizerPool = sync.Pool{
 	New: func() interface{} {
 		return &Canonicalizer{
@@ -59,7 +59,7 @@ func ReleaseCanonicalizer(c *Canonicalizer) {
 	canonicalizerPool.Put(c)
 }
 
-// Canonicalizer transforms an SSA function into a deterministic string representation.
+// Transforms an SSA function into a deterministic string representation.
 type Canonicalizer struct {
 	Policy     LiteralPolicy
 	StrictMode bool
@@ -152,7 +152,7 @@ func (c *Canonicalizer) analyzeLoops(fn *ssa.Function) {
 	AnalyzeSCEV(c.loopInfo)
 }
 
-// normalizeInductionVariables utilizes SCEV results to rewrite Basic IVs.
+// Utilizes SCEV results to rewrite Basic IVs.
 // Ref: Section 6.2.1 "Induction Variable Normalization".
 // This function now propagates SCEV normalization to derived values, not just
 // the root Phi nodes. Any instruction that resolves to an SCEVAddRec is virtualized.
@@ -164,7 +164,7 @@ func (c *Canonicalizer) normalizeInductionVariables() {
 	c.normalizeInductionVariablesRecursive(c.loopInfo.Loops)
 }
 
-// normalizeInductionVariablesRecursive processes loops and their children.
+// Processes loops and their children.
 func (c *Canonicalizer) normalizeInductionVariablesRecursive(loops []*Loop) {
 	for _, loop := range loops {
 		// Process child loops first (bottom-up)
@@ -330,7 +330,6 @@ func (c *Canonicalizer) hoistInvariantCalls(fn *ssa.Function) {
 					continue
 				}
 
-				// BUG FIX: Passed loopBlocks to correctly identify invariants defined outside the loop.
 				if c.areArgsInvariantLoop(call, loopBlocks) {
 					c.hoistedInstrs[call] = true
 					c.moveInstrToOtherBlock(call, hoistTarget)
@@ -444,8 +443,7 @@ func (c *Canonicalizer) isPureBuiltin(call *ssa.Call) bool {
 	return name == "len" || name == "cap"
 }
 
-// areArgsInvariantLoop checks if arguments are invariant relative to the loop.
-// BUG FIX: Now accepts loopBlocks to properly identify instructions defined outside the loop.
+// Checks if arguments are invariant relative to the loop.
 func (c *Canonicalizer) areArgsInvariantLoop(call *ssa.Call, loopBlocks map[*ssa.BasicBlock]bool) bool {
 	for _, arg := range call.Call.Args {
 		if _, ok := arg.(*ssa.Const); ok {
@@ -457,11 +455,11 @@ func (c *Canonicalizer) areArgsInvariantLoop(call *ssa.Call, loopBlocks map[*ssa
 		if _, ok := arg.(*ssa.Parameter); ok {
 			continue
 		}
-		// FIX: Captured variables (FreeVars) are also invariant in the scope of the closure.
+		// Captured variables (FreeVars) are also invariant in closure scope.
 		if _, ok := arg.(*ssa.FreeVar); ok {
 			continue
 		}
-		// FIX: Instructions defined outside the loop are invariant.
+		// Instructions defined outside the loop are invariant.
 		if instr, ok := arg.(ssa.Instruction); ok {
 			if instr.Block() != nil && !loopBlocks[instr.Block()] {
 				continue
@@ -582,22 +580,36 @@ func (c *Canonicalizer) normalizeValue(v ssa.Value, preferredName ...string) str
 	return name
 }
 
-// renamerFunc returns a Renamer function that maps SSA values to their canonical names.
-// SECURITY FIX: Implements robust cycle detection to prevent Stack Overflow (DoS).
-// The 'stack' map tracks values currently in the recursion chain.
+// Limits recursion depth in SCEV renaming to prevent stack overflow. A depth of
+// 100 is sufficient for legitimate nested expressions while preventing malicious
+// deeply nested chains (e.g., v1 = v2, v2 = v3, ... v10000 = C) or exponential
+// "Billion Laughs" expansion attacks (e.g., A -> {B, +, B}).
+const MaxRenamerDepth = 100
+
+// Returns a Renamer function that maps SSA values to their canonical names.
+// Implements cycle detection and depth limiting to prevent stack overflow
+// and expansion attacks. The 'stack' map tracks values in the recursion chain.
 func (c *Canonicalizer) renamerFunc() Renamer {
 	stack := make(map[ssa.Value]bool)
+	depth := 0
 
 	var renamer Renamer
 	renamer = func(v ssa.Value) string {
-		// 1. Check for recursion cycles (Defense against Stack Overflow)
+		// 1. Check depth limit (Defense against Stack Overflow and Billion Laughs)
+		if depth >= MaxRenamerDepth {
+			return "<depth-limit>"
+		}
+		depth++
+		defer func() { depth-- }()
+
+		// 2. Check for recursion cycles (Defense against infinite loops)
 		if stack[v] {
 			return "<cycle>"
 		}
 		stack[v] = true
 		defer delete(stack, v)
 
-		// 2. Iterative Resolution of Substitutions
+		// 3. Iterative Resolution of Substitutions
 		visited := make(map[ssa.Value]bool)
 		current := v
 
@@ -613,7 +625,7 @@ func (c *Canonicalizer) renamerFunc() Renamer {
 			}
 
 			// If the substitution is itself an SCEV, stringify it canonically.
-			// This call recurses back into renamer(), guarded by 'stack'.
+			// This call recurses back into renamer(), guarded by 'stack' and 'depth'.
 			if scev, isScev := sub.(SCEV); isScev {
 				return scev.StringWithRenamer(renamer)
 			}
@@ -690,10 +702,8 @@ func (c *Canonicalizer) processBlock(block *ssa.BasicBlock) {
 
 	// Inject Semantic Analysis Results (Section 6.2.2)
 	// We check if this block is a Loop Header and print TripCounts.
-	// Note: We no longer print IV definitions in comments because SCEV normalization
-	// now propagates to derived values. Printing the original phi's start/step would
-	// cause fingerprint divergence between semantically equivalent loops (e.g., range
-	// vs index loops where the effective IV usage is identical).
+	// IV definitions are not printed because SCEV normalization propagates to
+	// derived values and we don't want fingerprint divergence.
 	if c.loopInfo != nil {
 		if loop, ok := c.loopInfo.LoopMap[block]; ok {
 			c.output.WriteString("  ; LoopHeader")
@@ -1077,15 +1087,18 @@ func (c *Canonicalizer) normalizeOperand(v ssa.Value, context ssa.Instruction) s
 		if operand.Value == nil {
 			return fmt.Sprintf("const(%s:nil)", sanitizeType(operand.Type()))
 		}
-		// FIX: Sanitize string literals to prevent canonicalization injection.
-		// Raw string literals in Go (e.g. `\n`) can contain newlines.
-		// constant.StringVal + %q ensures safe escaping.
+		// Sanitize string literals using %q to prevent injection.
 		if operand.Value.Kind() == constant.String {
 			return fmt.Sprintf("const(%q)", constant.StringVal(operand.Value))
 		}
 		return fmt.Sprintf("const(%s)", operand.Value.ExactString())
 	case *ssa.Global:
-		return fmt.Sprintf("<global:%s>", sanitizeType(operand.Type()))
+		// Include package path and variable name for semantic precision.
+		pkgPath := ""
+		if operand.Pkg != nil && operand.Pkg.Pkg != nil {
+			pkgPath = operand.Pkg.Pkg.Path()
+		}
+		return fmt.Sprintf("<global:%s.%s:%s>", pkgPath, operand.Name(), sanitizeType(operand.Type()))
 	case *ssa.Builtin:
 		return fmt.Sprintf("<builtin:%s>", operand.Name())
 	case *ssa.Function:
@@ -1140,6 +1153,6 @@ func sanitizeType(t types.Type) string {
 		res = types.TypeString(t, packageQualifier)
 	}
 
-	// SECURITY FIX: Sanitize newlines to prevent IR injection via struct tags.
+	// Sanitize newlines to prevent IR injection via struct tags.
 	return strings.ReplaceAll(res, "\n", " ")
 }

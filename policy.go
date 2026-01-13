@@ -10,37 +10,33 @@ import (
 
 // -- Implementation Details --
 
-// LiteralPolicy defines the configurable strategy for determining which literal
-// values should be abstracted into placeholders during canonicalization.
-// It allows fine grained control over integer abstraction in different contexts.
+// Defines the configurable strategy for determining which literal values should
+// be abstracted into placeholders during canonicalization. Allows fine grained
+// control over integer abstraction in different contexts.
 type LiteralPolicy struct {
 	AbstractControlFlowComparisons bool
 	KeepSmallIntegerIndices        bool
 	KeepReturnStatusValues         bool
-	// FIX: Added flag to keep string literals.
-	KeepStringLiterals bool
-	SmallIntMin        int64
-	SmallIntMax        int64
-	AbstractOtherTypes bool
+	KeepStringLiterals             bool
+	SmallIntMin                    int64
+	SmallIntMax                    int64
+	AbstractOtherTypes             bool
 }
 
-// DefaultLiteralPolicy represents the standard policy for fingerprinting;
-// it preserves small integers used for indexing and status codes while masking
-// magic numbers and large constants.
+// Standard policy for fingerprinting. Preserves small integers used for indexing
+// and status codes while masking magic numbers and large constants.
 var DefaultLiteralPolicy = LiteralPolicy{
 	AbstractControlFlowComparisons: true,
 	KeepSmallIntegerIndices:        true,
 	KeepReturnStatusValues:         true,
-	// FIX: Set to false to maintain backward compatibility with existing tests,
-	// but the capability is now available for hardening.
-	KeepStringLiterals: false,
-	SmallIntMin:        -16,
-	SmallIntMax:        16,
-	AbstractOtherTypes: true,
+	KeepStringLiterals:             false,
+	SmallIntMin:                    -16,
+	SmallIntMax:                    16,
+	AbstractOtherTypes:             true,
 }
 
-// KeepAllLiteralsPolicy is designed for testing or exact matching by disabling
-// most abstractions and expanding the "small" integer range to the full int64 spectrum.
+// Designed for testing or exact matching by disabling most abstractions and
+// expanding the "small" integer range to the full int64 spectrum.
 var KeepAllLiteralsPolicy = LiteralPolicy{
 	AbstractControlFlowComparisons: false,
 	KeepSmallIntegerIndices:        true,
@@ -51,8 +47,8 @@ var KeepAllLiteralsPolicy = LiteralPolicy{
 	AbstractOtherTypes:             false,
 }
 
-// verifies if an ssa.Value is a constant equal to a given target.
-// It rigorously checks types to prevent panic during comparison.
+// Verifies if an ssa.Value is a constant equal to a given target.
+// Rigorously checks types to prevent panic during comparison.
 func isConst(v ssa.Value, target constant.Value) bool {
 	if v == nil || target == nil {
 		return false
@@ -72,15 +68,15 @@ func isConst(v ssa.Value, target constant.Value) bool {
 	return false
 }
 
-// decides whether a given constant should be replaced by a generic placeholder.
-// It analyzes the constant's type, value, and immediate usage context in the SSA graph.
+// Decides whether a given constant should be replaced by a generic placeholder.
+// Analyzes the constant's type, value, and immediate usage context in the SSA graph.
 func (p *LiteralPolicy) ShouldAbstract(c *ssa.Const, usageContext ssa.Instruction) bool {
 	// defensive check: nil constants cannot be abstracted or analyzed
 	if c == nil || c.Value == nil {
 		return false
 	}
 
-	// FIX: Check for strings first and preserve them if policy dictates.
+	// Check for strings first and preserve them if policy dictates.
 	if c.Value.Kind() == constant.String {
 		if p.KeepStringLiterals {
 			return false
@@ -233,7 +229,7 @@ func (p *LiteralPolicy) ShouldAbstract(c *ssa.Const, usageContext ssa.Instructio
 	return p.AbstractOtherTypes
 }
 
-// checks if the constant is an integer fitting within the configured small integer range.
+// Checks if the constant is an integer fitting within the configured small integer range.
 func (p *LiteralPolicy) isSmallInt(c constant.Value) bool {
 	if c.Kind() != constant.Int {
 		return false
@@ -246,7 +242,7 @@ func (p *LiteralPolicy) isSmallInt(c constant.Value) bool {
 	return val >= p.SmallIntMin && val <= p.SmallIntMax
 }
 
-// identifies strict comparison operators.
+// Identifies strict comparison operators.
 func isComparisonOp(op token.Token) bool {
 	switch op {
 	case token.EQL, token.NEQ, token.LSS, token.LEQ, token.GTR, token.GEQ:
