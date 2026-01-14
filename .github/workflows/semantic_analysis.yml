@@ -69,13 +69,20 @@ jobs:
 
           FAILED_REFACTOR=false
 
+          # Create isolated temp directory within module context
+          # Using .sfw_temp (hidden, ignored by Go tooling for package discovery in parent)
+          TEMP_DIR=".sfw_temp_$$"
+          mkdir -p "$TEMP_DIR"
+          # Copy go.mod/go.sum so the temp file can resolve imports
+          cp go.mod go.sum "$TEMP_DIR/" 2>/dev/null || true
+
           # Iterate over changed Go files
           if git diff --name-only "$BASE_SHA" HEAD | grep -q '\.go$'; then
             git diff --name-only -z "$BASE_SHA" HEAD -- '*.go' | while IFS= read -r -d '' file; do
               if [ ! -f "$file" ]; then continue; fi
 
-              # Use /tmp to avoid Go package conflicts with workspace files
-              TEMP_OLD="/tmp/old_temp.go"
+              # Place temp file in isolated directory with module context
+              TEMP_OLD="$TEMP_DIR/old_temp.go"
               git show "$BASE_SHA:$file" > "$TEMP_OLD" 2>/dev/null || touch "$TEMP_OLD"
               
               if ! OUTPUT=$(sfw diff "$TEMP_OLD" "$file" 2>&1); then
@@ -113,6 +120,9 @@ jobs:
           else
              echo "No Go files changed." >> $GITHUB_STEP_SUMMARY
           fi
+
+          # Cleanup temp directory
+          rm -rf "$TEMP_DIR"
 
           if [ -f /tmp/failed_refactor ] && [ "$(cat /tmp/failed_refactor)" = "true" ]; then
              echo "" >> $GITHUB_STEP_SUMMARY
