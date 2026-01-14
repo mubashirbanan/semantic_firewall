@@ -74,14 +74,15 @@ jobs:
             git diff --name-only -z "$BASE_SHA" HEAD -- '*.go' | while IFS= read -r -d '' file; do
               if [ ! -f "$file" ]; then continue; fi
 
-              TEMP_OLD="old_temp.go"
+              # Use /tmp to avoid Go package conflicts with workspace files
+              TEMP_OLD="/tmp/old_temp.go"
               git show "$BASE_SHA:$file" > "$TEMP_OLD" 2>/dev/null || touch "$TEMP_OLD"
               
               if ! OUTPUT=$(sfw diff "$TEMP_OLD" "$file" 2>&1); then
                  echo "::error::sfw failed on $file: $OUTPUT"
-                 rm "$TEMP_OLD"; continue
+                 rm -f "$TEMP_OLD"; continue
               fi
-              rm "$TEMP_OLD"
+              rm -f "$TEMP_OLD"
 
               # Validate JSON
               if ! echo "$OUTPUT" | jq -e . >/dev/null 2>&1; then
