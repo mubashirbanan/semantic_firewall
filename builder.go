@@ -58,6 +58,10 @@ func BuildSSAFromPackages(initialPkgs []*packages.Package) (*ssa.Program, *ssa.P
 	}
 
 	if ssaPkg == nil {
+		// Include package errors in the error message for better diagnostics
+		if errorMessages.Len() > 0 {
+			return nil, nil, fmt.Errorf("could not find main SSA package for %s (packages contain errors: %s)", mainPkg.ID, strings.TrimSpace(errorMessages.String()))
+		}
 		return nil, nil, fmt.Errorf("could not find main SSA package for %s", mainPkg.ID)
 	}
 

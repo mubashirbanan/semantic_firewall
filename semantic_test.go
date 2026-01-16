@@ -21,7 +21,6 @@ func wipe(b []byte) {
 	runtime.KeepAlive(b)
 }`
 
-	// 2. Refactored Implementation (Semantic Match)
 	// Uses 'entropy' instead of 'key', 'buf' instead of 'b'.
 	// This should produce the SAME fingerprint if the canonicalizer works.
 	const srcRefactored = `package main

@@ -202,3 +202,20 @@ func constructLoopBody(loop *Loop, latches []*ssa.BasicBlock) {
 		}
 	}
 }
+
+// Iterative loop counting to prevent stack overflow on deep nesting.
+func countLoops(loops []*Loop) int {
+	count := 0
+	stack := make([]*Loop, len(loops))
+	copy(stack, loops)
+
+	for len(stack) > 0 {
+		l := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		count++
+		if len(l.Children) > 0 {
+			stack = append(stack, l.Children...)
+		}
+	}
+	return count
+}

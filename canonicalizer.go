@@ -108,11 +108,8 @@ func (c *Canonicalizer) CanonicalizeFunction(fn *ssa.Function) string {
 	}
 
 	c.resetScratch()
-	
+
 	// Pre-allocate strings.Builder capacity based on function size.
-	// Estimate derived from empirical measurements: typical SSA instructions produce
-	// ~50 bytes of canonical output (including operands, types, and whitespace).
-	// This reduces reallocation overhead during string building.
 	const bytesPerInstruction = 50
 	estimatedSize := 0
 	for _, block := range fn.Blocks {
@@ -121,12 +118,10 @@ func (c *Canonicalizer) CanonicalizeFunction(fn *ssa.Function) string {
 	c.output.Grow(estimatedSize)
 
 	// PHASE 1: Semantic Analysis (Loops & SCEV)
-	// We run this before normalization to inform the canonicalization strategy.
 	c.analyzeLoops(fn)
 
 	// PHASE 2: Semantic Normalization
 	c.hoistInvariantCalls(fn)
-	// Integrate SCEV-based Normalization (Section 6.2.1)
 	c.normalizeInductionVariables()
 
 	// PHASE 3: Register Naming
@@ -157,65 +152,39 @@ func (c *Canonicalizer) CanonicalizeFunction(fn *ssa.Function) string {
 }
 
 func (c *Canonicalizer) analyzeLoops(fn *ssa.Function) {
-	// Detect Loops
 	c.loopInfo = DetectLoops(fn)
-	// Run SCEV Analysis (populates Inductions and TripCounts)
 	AnalyzeSCEV(c.loopInfo)
 }
 
-// Utilizes SCEV results to rewrite Basic IVs.
-// Ref: Section 6.2.1 "Induction Variable Normalization".
-// This function now propagates SCEV normalization to derived values, not just
-// the root Phi nodes. Any instruction that resolves to an SCEVAddRec is virtualized.
 func (c *Canonicalizer) normalizeInductionVariables() {
 	if c.loopInfo == nil {
 		return
 	}
-
 	c.normalizeInductionVariablesRecursive(c.loopInfo.Loops)
 }
 
-// Processes loops and their children.
 func (c *Canonicalizer) normalizeInductionVariablesRecursive(loops []*Loop) {
 	for _, loop := range loops {
-		// Process child loops first (bottom-up)
 		c.normalizeInductionVariablesRecursive(loop.Children)
 
-		// Step 1: Normalize the root IV Phi nodes
 		for phi, iv := range loop.Inductions {
 			if iv.Type == IVTypeBasic {
-				// We mask the original Phi instruction so it doesn't appear in output.
 				c.virtualizedInstrs[phi] = true
-
-				// Register substitution: phi -> {Start, +, Step}
-				// The SCEVAddRec implements ssa.Value interface (stubbed in scev.go),
-				// allowing it to be stored here and printed by normalizeOperand.
 				scev := &SCEVAddRec{Start: iv.Start, Step: iv.Step, Loop: loop}
 				c.virtualSubstitutions[phi] = scev
 			}
 		}
 
-		// Step 2: Propagate SCEV to derived values in the loop body.
-		// Iterate through all instructions in the loop and attempt to convert
-		// each one to an SCEV. If it resolves to an AddRec, virtualize it.
 		for block := range loop.Blocks {
 			for _, instr := range block.Instrs {
-				// Skip instructions already virtualized (e.g., Phi nodes)
 				if c.virtualizedInstrs[instr] {
 					continue
 				}
-
-				// Only process BinOps that could produce derived IVs
 				binOp, ok := instr.(*ssa.BinOp)
 				if !ok {
 					continue
 				}
-
-				// Convert the BinOp to SCEV
 				scev := toSCEV(binOp, loop)
-
-				// If it resolves to an AddRec, this is a derived IV expression
-				// that should be virtualized for canonical representation
 				if addRec, ok := scev.(*SCEVAddRec); ok {
 					c.virtualizedInstrs[binOp] = true
 					c.virtualSubstitutions[binOp] = addRec
@@ -233,7 +202,6 @@ func (c *Canonicalizer) reconstructBlockInstructions(fn *ssa.Function) {
 
 	for _, b := range fn.Blocks {
 		for _, instr := range b.Instrs {
-			// Skip virtualized instructions (e.g. normalized IV Phis)
 			if c.virtualizedInstrs[instr] {
 				continue
 			}
@@ -336,11 +304,9 @@ func (c *Canonicalizer) hoistInvariantCalls(fn *ssa.Function) {
 				if !ok {
 					continue
 				}
-
 				if !c.isPureBuiltin(call) {
 					continue
 				}
-
 				if c.areArgsInvariantLoop(call, loopBlocks) {
 					c.hoistedInstrs[call] = true
 					c.moveInstrToOtherBlock(call, hoistTarget)
@@ -454,7 +420,6 @@ func (c *Canonicalizer) isPureBuiltin(call *ssa.Call) bool {
 	return name == "len" || name == "cap"
 }
 
-// Checks if arguments are invariant relative to the loop.
 func (c *Canonicalizer) areArgsInvariantLoop(call *ssa.Call, loopBlocks map[*ssa.BasicBlock]bool) bool {
 	for _, arg := range call.Call.Args {
 		if _, ok := arg.(*ssa.Const); ok {
@@ -466,11 +431,9 @@ func (c *Canonicalizer) areArgsInvariantLoop(call *ssa.Call, loopBlocks map[*ssa
 		if _, ok := arg.(*ssa.Parameter); ok {
 			continue
 		}
-		// Captured variables (FreeVars) are also invariant in closure scope.
 		if _, ok := arg.(*ssa.FreeVar); ok {
 			continue
 		}
-		// Instructions defined outside the loop are invariant.
 		if instr, ok := arg.(ssa.Instruction); ok {
 			if instr.Block() != nil && !loopBlocks[instr.Block()] {
 				continue
@@ -591,36 +554,32 @@ func (c *Canonicalizer) normalizeValue(v ssa.Value, preferredName ...string) str
 	return name
 }
 
-// Limits recursion depth in SCEV renaming to prevent stack overflow. A depth of
-// 100 is sufficient for legitimate nested expressions while preventing malicious
-// deeply nested chains (e.g., v1 = v2, v2 = v3, ... v10000 = C) or exponential
-// "Billion Laughs" expansion attacks (e.g., A -> {B, +, B}).
-const MaxRenamerDepth = 100
+// FIX: Limits recursion depth to 20.
+// A depth of 100 was unsafe and allowed 2^100 expansion (Billion Laughs).
+// 20 levels allows 2^20 (~1M) which is safe and sufficient for code analysis.
+const MaxRenamerDepth = 20
 
-// Returns a Renamer function that maps SSA values to their canonical names.
-// Implements cycle detection and depth limiting to prevent stack overflow
-// and expansion attacks. The 'stack' map tracks values in the recursion chain.
 func (c *Canonicalizer) renamerFunc() Renamer {
 	stack := make(map[ssa.Value]bool)
 	depth := 0
 
 	var renamer Renamer
 	renamer = func(v ssa.Value) string {
-		// 1. Check depth limit (Defense against Stack Overflow and Billion Laughs)
+		// 1. Check depth limit
 		if depth >= MaxRenamerDepth {
 			return "<depth-limit>"
 		}
 		depth++
 		defer func() { depth-- }()
 
-		// 2. Check for recursion cycles (Defense against infinite loops)
+		// 2. Check for recursion cycles
 		if stack[v] {
 			return "<cycle>"
 		}
 		stack[v] = true
 		defer delete(stack, v)
 
-		// 3. Iterative Resolution of Substitutions
+		// 3. Iterative Resolution
 		visited := make(map[ssa.Value]bool)
 		current := v
 
@@ -635,8 +594,6 @@ func (c *Canonicalizer) renamerFunc() Renamer {
 				break
 			}
 
-			// If the substitution is itself an SCEV, stringify it canonically.
-			// This call recurses back into renamer(), guarded by 'stack' and 'depth'.
 			if scev, isScev := sub.(SCEV); isScev {
 				return scev.StringWithRenamer(renamer)
 			}
@@ -711,10 +668,6 @@ func (c *Canonicalizer) writeFunctionSignature(fn *ssa.Function) {
 func (c *Canonicalizer) processBlock(block *ssa.BasicBlock) {
 	c.output.WriteString(c.blockMap[block] + ":\n")
 
-	// Inject Semantic Analysis Results (Section 6.2.2)
-	// We check if this block is a Loop Header and print TripCounts.
-	// IV definitions are not printed because SCEV normalization propagates to
-	// derived values and we don't want fingerprint divergence.
 	if c.loopInfo != nil {
 		if loop, ok := c.loopInfo.LoopMap[block]; ok {
 			c.output.WriteString("  ; LoopHeader")
@@ -997,24 +950,19 @@ func (c *Canonicalizer) writePhi(w *strings.Builder, i *ssa.Phi, instr ssa.Instr
 	edges := make([]edge, 0, len(i.Edges))
 	preds := i.Block().Preds
 	for j, val := range i.Edges {
-		// Defensive check: ensure Preds and Edges have matching lengths.
-		// In well-formed SSA they should match, but we guard against edge cases.
 		if j >= len(preds) {
 			break
 		}
 		predBlock := preds[j]
 		predID := c.blockMap[predBlock]
-		// Skip unmapped blocks and validate predID format before parsing
 		if predID == "" || len(predID) < 2 {
 			continue
 		}
 		idx, err := strconv.Atoi(predID[1:])
 		if err != nil {
-			// Malformed block ID; skip this edge to prevent panic
 			continue
 		}
 
-		// Check for virtual constant replacement for this Phi edge.
 		valStr := c.normalizeOperand(val, instr)
 		if overrides, ok := c.virtualPhiConstants[i]; ok {
 			if ov, ok := overrides[j]; ok {
@@ -1050,13 +998,9 @@ func (c *Canonicalizer) writeCallCommon(w *strings.Builder, common *ssa.CallComm
 }
 
 func (c *Canonicalizer) normalizeOperand(v ssa.Value, context ssa.Instruction) string {
-	// Resolves transitive substitutions by iterating until a steady state is found.
-	// We iterate to find the final replaced value (e.g., A -> B -> C).
-	// Use cycle detection to prevent infinite loops in malformed graphs.
 	visited := make(map[ssa.Value]bool)
 	for {
 		if visited[v] {
-			// Cycle detected; stop resolution to prevent infinite loop
 			break
 		}
 		visited[v] = true
@@ -1066,9 +1010,6 @@ func (c *Canonicalizer) normalizeOperand(v ssa.Value, context ssa.Instruction) s
 			break
 		}
 
-		// Check if the replacement value (sub) IS the instruction currently being printed (context).
-		// If they are the same, we must NOT substitute.
-		// Doing so would create a self-referential Phi node (e.g., v3 = Phi [..., v3]).
 		shouldSubstitute := true
 		if subInstr, isInstr := sub.(ssa.Instruction); isInstr {
 			if subInstr == context {
@@ -1085,11 +1026,6 @@ func (c *Canonicalizer) normalizeOperand(v ssa.Value, context ssa.Instruction) s
 
 	switch operand := v.(type) {
 	case SCEV:
-		// If it resolved to an SCEV object, print it using canonical names.
-		// CRITICAL: We must use StringWithRenamer to ensure determinism.
-		// Without this, raw SSA names (t0, t1) would leak into the output,
-		// causing semantically identical functions with different register
-		// allocations to produce different fingerprints.
 		return operand.StringWithRenamer(c.renamerFunc())
 	case *ssa.Const:
 		if c.Policy.ShouldAbstract(operand, context) {
@@ -1098,13 +1034,11 @@ func (c *Canonicalizer) normalizeOperand(v ssa.Value, context ssa.Instruction) s
 		if operand.Value == nil {
 			return fmt.Sprintf("const(%s:nil)", sanitizeType(operand.Type()))
 		}
-		// Sanitize string literals using %q to prevent injection.
 		if operand.Value.Kind() == constant.String {
 			return fmt.Sprintf("const(%q)", constant.StringVal(operand.Value))
 		}
 		return fmt.Sprintf("const(%s)", operand.Value.ExactString())
 	case *ssa.Global:
-		// Include package path and variable name for semantic precision.
 		pkgPath := ""
 		if operand.Pkg != nil && operand.Pkg.Pkg != nil {
 			pkgPath = operand.Pkg.Pkg.Path()
@@ -1164,6 +1098,5 @@ func sanitizeType(t types.Type) string {
 		res = types.TypeString(t, packageQualifier)
 	}
 
-	// Sanitize newlines to prevent IR injection via struct tags.
 	return strings.ReplaceAll(res, "\n", " ")
 }

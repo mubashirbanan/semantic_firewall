@@ -113,9 +113,7 @@ func (s *Scanner) SetThreshold(threshold float64) {
 	s.matchThreshold = threshold
 }
 
-// ================================
-// THE INDEXER (Lab Phase)
-// ================================
+// -- THE INDEXER (Lab Phase) --
 
 // Generates a signature entry from a FunctionTopology.
 // This is the "Lab Phase" where we analyze known malware to build the database.
@@ -166,12 +164,14 @@ func generateTopologyHash(topo *FunctionTopology) string {
 		topo.InstrCount, topo.LoopCount, topo.BranchCount)
 
 	// Include sorted call signatures
+	// SECURITY FIX: Use length-prefixed encoding to prevent hash collisions.
+	// Previous comma-separated list was vulnerable because function signatures contain commas.
 	var calls []string
 	for call, count := range topo.CallSignatures {
-		calls = append(calls, fmt.Sprintf("%s:%d", call, count))
+		calls = append(calls, fmt.Sprintf("%d:%s:%d", len(call), call, count))
 	}
 	sort.Strings(calls)
-	builder.WriteString(strings.Join(calls, ","))
+	builder.WriteString(strings.Join(calls, ";"))
 
 	// Include control flow flags
 	if topo.HasDefer {
@@ -231,9 +231,7 @@ func hasReconnectPattern(topo *FunctionTopology) bool {
 	return hasNetDial && hasSleep && topo.LoopCount > 0
 }
 
-// ================================
-// THE HUNTER (Scanner Phase)
-// ================================
+// -- THE HUNTER (Scanner Phase) --
 
 // Checks a function topology against all signatures.
 // This is the "Hunter Phase" where we scan unknown code for matches.
@@ -340,20 +338,26 @@ func (s *Scanner) matchSignature(topo *FunctionTopology, funcName string, sig Si
 }
 
 // Calculates structural similarity between topology and signature.
+// Returns a value in [0, 1] where 1.0 is a perfect match.
 func computeTopologySimilarity(topo *FunctionTopology, sig Signature) float64 {
 	var scores []float64
 
 	// Block count similarity (with tolerance)
-	if sig.NodeCount > 0 {
+	// Handle edge cases: negative or zero values
+	if sig.NodeCount > 0 && topo.BlockCount >= 0 {
 		blockRatio := float64(topo.BlockCount) / float64(sig.NodeCount)
 		if blockRatio > 1 {
 			blockRatio = 1 / blockRatio
 		}
 		scores = append(scores, blockRatio)
+	} else if sig.NodeCount > 0 && topo.BlockCount < 0 {
+		// Invalid topology - penalize heavily
+		scores = append(scores, 0.0)
 	}
 
 	// Loop depth similarity
-	if sig.LoopDepth > 0 {
+	// Handle edge cases: negative values
+	if sig.LoopDepth > 0 && topo.LoopCount >= 0 {
 		if topo.LoopCount == sig.LoopDepth {
 			scores = append(scores, 1.0)
 		} else if topo.LoopCount > 0 {
@@ -365,6 +369,9 @@ func computeTopologySimilarity(topo *FunctionTopology, sig Signature) float64 {
 		} else {
 			scores = append(scores, 0.0)
 		}
+	} else if sig.LoopDepth > 0 && topo.LoopCount < 0 {
+		// Invalid topology - penalize heavily
+		scores = append(scores, 0.0)
 	}
 
 	if len(scores) == 0 {

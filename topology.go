@@ -12,10 +12,7 @@ import (
 )
 
 // Captures the structural "shape" of a function independent of names.
-// This enables matching functions that have been renamed or obfuscated.
 type FunctionTopology struct {
-	// Fuzzy Hash for Bucket Indexing (LSH-lite)
-	// Used for O(1) candidate retrieval in large databases.
 	FuzzyHash string
 
 	// Basic metrics
@@ -50,12 +47,18 @@ type FunctionTopology struct {
 	StringLiterals []string
 
 	// Entropy analysis for obfuscation detection
-	EntropyScore   float64        // Shannon entropy of function body (0.0-8.0)
-	EntropyProfile EntropyProfile // Full entropy analysis
+	EntropyScore   float64
+	EntropyProfile EntropyProfile
 
 	// The underlying function (internal use)
 	fn *ssa.Function
 }
+
+const (
+	// Hardening: Prevent Memory DoS from massive string literals
+	maxStringLiteralLen = 4096      // 4KB limit per string
+	maxTotalStringBytes = 1024 * 64 // 64KB limit per function
+)
 
 // Analyzes an SSA function and extracts its structural features.
 func ExtractTopology(fn *ssa.Function) *FunctionTopology {
@@ -74,12 +77,10 @@ func ExtractTopology(fn *ssa.Function) *FunctionTopology {
 		ReturnTypes:    make([]string, 0),
 	}
 
-	// Extract parameter types
 	for _, p := range fn.Params {
 		t.ParamTypes = append(t.ParamTypes, normalizeTypeName(p.Type()))
 	}
 
-	// Extract return types from signature
 	sig := fn.Signature
 	results := sig.Results()
 	t.ReturnCount = results.Len()
@@ -87,11 +88,11 @@ func ExtractTopology(fn *ssa.Function) *FunctionTopology {
 		t.ReturnTypes = append(t.ReturnTypes, normalizeTypeName(results.At(i).Type()))
 	}
 
-	// Detect loops
 	loopInfo := DetectLoops(fn)
 	t.LoopCount = countLoops(loopInfo.Loops)
 
-	// Analyze all instructions
+	currentStringBytes := 0
+
 	for _, block := range fn.Blocks {
 		t.InstrCount += len(block.Instrs)
 
@@ -99,56 +100,53 @@ func ExtractTopology(fn *ssa.Function) *FunctionTopology {
 			switch i := instr.(type) {
 			case *ssa.If:
 				t.BranchCount++
-
 			case *ssa.Phi:
 				t.PhiCount++
-
 			case *ssa.Call:
 				sig := extractCallSignature(i)
 				t.CallSignatures[sig]++
-
 			case *ssa.Go:
 				t.HasGo = true
 				sig := extractGoSignature(i)
 				t.CallSignatures["go:"+sig]++
-
 			case *ssa.Defer:
 				t.HasDefer = true
 				sig := extractDeferSignature(i)
 				t.CallSignatures["defer:"+sig]++
-
 			case *ssa.Panic:
 				t.HasPanic = true
-
 			case *ssa.Select:
 				t.HasSelect = true
-
 			case *ssa.Range:
 				t.HasRange = true
-
 			case *ssa.BinOp:
 				t.BinOpCounts[i.Op.String()]++
-
 			case *ssa.UnOp:
 				t.UnOpCounts[i.Op.String()]++
 			}
 
-			// REMEDIATION: Naive Entropy Fix
-			// Target specific string literals; ignore SSA IR verbosity.
 			for _, op := range instr.Operands(nil) {
 				if op == nil || *op == nil {
 					continue
 				}
 				if c, ok := (*op).(*ssa.Const); ok && c.Value != nil {
 					if c.Value.Kind() == constant.String {
-						t.StringLiterals = append(t.StringLiterals, c.Value.ExactString())
+						val := c.Value.ExactString()
+
+						if len(val) > maxStringLiteralLen {
+							val = val[:maxStringLiteralLen]
+						}
+
+						if currentStringBytes+len(val) <= maxTotalStringBytes {
+							t.StringLiterals = append(t.StringLiterals, val)
+							currentStringBytes += len(val)
+						}
 					}
 				}
 			}
 		}
 	}
 
-	// Check for recover in defers (simple heuristic)
 	if t.HasDefer {
 		for _, block := range fn.Blocks {
 			for _, instr := range block.Instrs {
@@ -163,30 +161,23 @@ func ExtractTopology(fn *ssa.Function) *FunctionTopology {
 		}
 	}
 
-	// Sort string literals for deterministic comparison
 	sort.Strings(t.StringLiterals)
 
-	// REMEDIATION: Naive Entropy Fix
-	// Calculate entropy on pure data segments to prevent dilution by verbose IR instructions.
-	// Pre-calculate total size to avoid repeated allocations
 	totalSize := 0
 	for _, s := range t.StringLiterals {
-		// Estimate size after quote stripping (strings may have quotes or not)
 		if len(s) >= 2 && (s[0] == '"' || s[0] == '`') {
 			totalSize += len(s) - 2
 		} else {
 			totalSize += len(s)
 		}
 	}
-	
+
 	dataAccumulator := make([]byte, 0, totalSize)
 	for _, s := range t.StringLiterals {
-		// Strip quotes for raw data analysis
 		raw := strings.Trim(s, "\"`")
 		dataAccumulator = append(dataAccumulator, []byte(raw)...)
 	}
 
-	// If no data, the function has 0 entropy (pure logic).
 	if len(dataAccumulator) > 0 {
 		t.EntropyScore = CalculateEntropy(dataAccumulator)
 		t.EntropyProfile = CalculateEntropyProfile(dataAccumulator, t.StringLiterals)
@@ -195,19 +186,12 @@ func ExtractTopology(fn *ssa.Function) *FunctionTopology {
 		t.EntropyProfile = EntropyProfile{Classification: EntropyLow}
 	}
 
-	// REMEDIATION: O(1) Topology Trap Fix
-	// Generates a Fuzzy Bucket Hash (LSH-lite) for efficient indexing.
 	t.FuzzyHash = GenerateFuzzyHash(t)
 
 	return t
 }
 
-// REMEDIATION: O(1) Topology Trap Fix
-// GenerateFuzzyHash creates a locality-sensitive hash for bucket indexing.
-// Buckets: Blocks (Log2), Loops (Exact/Capped), Branches (Log2).
 func GenerateFuzzyHash(t *FunctionTopology) string {
-	// Quantize metrics to create stable buckets
-	// Log2 buckets reduce sensitivity to small changes in larger functions
 	bBucket := 0
 	if t.BlockCount > 0 {
 		bBucket = int(math.Log2(float64(t.BlockCount)))
@@ -216,31 +200,24 @@ func GenerateFuzzyHash(t *FunctionTopology) string {
 	if t.BranchCount > 0 {
 		brBucket = int(math.Log2(float64(t.BranchCount)))
 	}
-	// Loop count is critical structural feature, keep exact or capped
 	lBucket := t.LoopCount
 	if lBucket > 5 {
-		lBucket = 5 // Cap at 5+
+		lBucket = 5
 	}
 
 	return fmt.Sprintf("B%dL%dBR%d", bBucket, lBucket, brBucket)
 }
 
-// Converts a type to a canonical string, stripping package paths.
 func normalizeTypeName(t types.Type) string {
 	s := t.String()
-	// Strip package paths for comparison (e.g., "github.com/foo/bar.Type" -> "bar.Type")
 	if idx := strings.LastIndex(s, "/"); idx >= 0 {
 		s = s[idx+1:]
 	}
 	return s
 }
 
-// REMEDIATION: Call Signature Fragility Fix
-// Resolve interface methods and reflection targets.
 func extractCallSignature(call *ssa.Call) string {
 	if call.Call.IsInvoke() {
-		// Method call on interface: include Interface Type Name + Method Name
-		// This makes signatures robust against implementation changes.
 		recvType := call.Call.Value.Type()
 		return fmt.Sprintf("invoke:%s.%s", normalizeTypeName(recvType), call.Call.Method.Name())
 	}
@@ -256,7 +233,6 @@ func extractCallSignature(call *ssa.Call) string {
 		}
 	}
 
-	// Detect Reflection: call.Call.Value might be a method value like reflect.Value.Call
 	if call.Call.Value != nil {
 		typeStr := call.Call.Value.Type().String()
 		if strings.Contains(typeStr, "reflect.Value") {
@@ -296,24 +272,12 @@ func extractDeferSignature(d *ssa.Defer) string {
 
 func extractFunctionSig(fn *ssa.Function) string {
 	if fn.Pkg != nil {
-		// Use package name (not path) + function name
 		pkgName := fn.Pkg.Pkg.Name()
 		return fmt.Sprintf("%s.%s", pkgName, fn.Name())
 	}
-	// Might be a method or closure
 	return fn.RelString(nil)
 }
 
-func countLoops(loops []*Loop) int {
-	count := len(loops)
-	for _, l := range loops {
-		count += countLoops(l.Children)
-	}
-	return count
-}
-
-// Computes a similarity score between two function topologies.
-// Returns a value between 0.0 (completely different) and 1.0 (identical structure).
 func TopologySimilarity(a, b *FunctionTopology) float64 {
 	if a == nil || b == nil {
 		return 0.0
@@ -322,17 +286,14 @@ func TopologySimilarity(a, b *FunctionTopology) float64 {
 	var score float64
 	var weights float64
 
-	// Weight 1: Parameter signature match (high importance)
 	paramScore := typeListSimilarity(a.ParamTypes, b.ParamTypes)
 	score += paramScore * 3.0
 	weights += 3.0
 
-	// Weight 2: Return signature match (high importance)
 	returnScore := typeListSimilarity(a.ReturnTypes, b.ReturnTypes)
 	score += returnScore * 2.0
 	weights += 2.0
 
-	// Weight 3: Loop count similarity (critical for control flow)
 	if a.LoopCount == b.LoopCount {
 		score += 2.0
 	} else if abs(a.LoopCount-b.LoopCount) == 1 {
@@ -340,7 +301,6 @@ func TopologySimilarity(a, b *FunctionTopology) float64 {
 	}
 	weights += 2.0
 
-	// Weight 4: Branch count similarity
 	branchDiff := abs(a.BranchCount - b.BranchCount)
 	maxBranch := max(a.BranchCount, b.BranchCount)
 	if maxBranch > 0 {
@@ -350,17 +310,14 @@ func TopologySimilarity(a, b *FunctionTopology) float64 {
 	}
 	weights += 1.5
 
-	// Weight 5: Call signature overlap (VERY important for malware detection)
-	callScore := mapSimilarity(a.CallSignatures, b.CallSignatures)
+	callScore := MapSimilarity(a.CallSignatures, b.CallSignatures)
 	score += callScore * 4.0
 	weights += 4.0
 
-	// Weight 6: Operator profile similarity
-	binOpScore := mapSimilarity(a.BinOpCounts, b.BinOpCounts)
+	binOpScore := MapSimilarity(a.BinOpCounts, b.BinOpCounts)
 	score += binOpScore * 1.0
 	weights += 1.0
 
-	// Weight 7: Boolean feature match
 	boolScore := 0.0
 	boolCount := 0.0
 	boolScore += boolMatch(a.HasDefer, b.HasDefer)
@@ -376,7 +333,6 @@ func TopologySimilarity(a, b *FunctionTopology) float64 {
 	score += (boolScore / boolCount) * 1.0
 	weights += 1.0
 
-	// Weight 8: Block count similarity (rough size match)
 	blockDiff := abs(a.BlockCount - b.BlockCount)
 	maxBlock := max(a.BlockCount, b.BlockCount)
 	if maxBlock > 0 {
@@ -389,7 +345,6 @@ func TopologySimilarity(a, b *FunctionTopology) float64 {
 
 func typeListSimilarity(a, b []string) float64 {
 	if len(a) != len(b) {
-		// Length mismatch is a strong negative signal
 		return 0.0
 	}
 	if len(a) == 0 {
@@ -404,23 +359,22 @@ func typeListSimilarity(a, b []string) float64 {
 	return float64(matches) / float64(len(a))
 }
 
-func mapSimilarity(a, b map[string]int) float64 {
+// MapSimilarity calculates the similarity between two frequency maps.
+// It is exported to allow benchmarking by external tests.
+func MapSimilarity(a, b map[string]int) float64 {
 	if len(a) == 0 && len(b) == 0 {
 		return 1.0
 	}
 
-	// Single-pass algorithm: iterate once through both maps
 	intersection := 0
 	union := 0
-	
-	// First pass: process all keys in map 'a'
+
 	for k, countA := range a {
 		countB := b[k]
 		intersection += min(countA, countB)
 		union += max(countA, countB)
 	}
-	
-	// Second pass: process keys only in map 'b'
+
 	for k, countB := range b {
 		if _, exists := a[k]; !exists {
 			union += countB
@@ -447,30 +401,20 @@ func abs(x int) int {
 	return x
 }
 
-// Represents a potential function pairing with a confidence score.
 type TopologyMatch struct {
 	OldResult   FingerprintResult
 	NewResult   FingerprintResult
 	OldTopology *FunctionTopology
 	NewTopology *FunctionTopology
 	Similarity  float64
-	ByName      bool // true if matched by name, false if by topology
+	ByName      bool
 }
 
-// Performs topology based function matching between two sets of fingerprint results.
-// This is the "unobfuscator" that finds renamed functions.
-//
-// Strategy:
-// 1. First, try to match by exact name (preserves intentional naming)
-// 2. For unmatched functions, compute topology similarity matrix
-// 3. Use greedy matching to pair functions by structural similarity
-// 4. Report matches above a confidence threshold
 func MatchFunctionsByTopology(oldResults, newResults []FingerprintResult, threshold float64) (
 	matched []TopologyMatch,
 	addedFuncs []FingerprintResult,
 	removedFuncs []FingerprintResult,
 ) {
-	// Build name lookup maps
 	oldByName := make(map[string]FingerprintResult)
 	newByName := make(map[string]FingerprintResult)
 
@@ -483,11 +427,9 @@ func MatchFunctionsByTopology(oldResults, newResults []FingerprintResult, thresh
 		newByName[shortName] = r
 	}
 
-	// Track what's been matched
 	matchedOld := make(map[string]bool)
 	matchedNew := make(map[string]bool)
 
-	// Phase 1: Match by exact name
 	for name, oldR := range oldByName {
 		if newR, ok := newByName[name]; ok {
 			oldFn := oldR.GetSSAFunction()
@@ -501,7 +443,7 @@ func MatchFunctionsByTopology(oldResults, newResults []FingerprintResult, thresh
 				newTopo = ExtractTopology(newFn)
 			}
 
-			sim := 1.0 // Name match implies high confidence
+			sim := 1.0
 			if oldTopo != nil && newTopo != nil {
 				sim = TopologySimilarity(oldTopo, newTopo)
 			}
@@ -519,7 +461,6 @@ func MatchFunctionsByTopology(oldResults, newResults []FingerprintResult, thresh
 		}
 	}
 
-	// Phase 2: Collect unmatched functions
 	var unmatchedOld []FingerprintResult
 	var unmatchedNew []FingerprintResult
 
@@ -534,9 +475,7 @@ func MatchFunctionsByTopology(oldResults, newResults []FingerprintResult, thresh
 		}
 	}
 
-	// Phase 3: Topology matching for unmatched functions
 	if len(unmatchedOld) > 0 && len(unmatchedNew) > 0 {
-		// Extract topologies
 		oldTopos := make([]*FunctionTopology, len(unmatchedOld))
 		newTopos := make([]*FunctionTopology, len(unmatchedNew))
 
@@ -551,7 +490,6 @@ func MatchFunctionsByTopology(oldResults, newResults []FingerprintResult, thresh
 			}
 		}
 
-		// Build similarity matrix
 		type candidate struct {
 			oldIdx int
 			newIdx int
@@ -574,9 +512,15 @@ func MatchFunctionsByTopology(oldResults, newResults []FingerprintResult, thresh
 			}
 		}
 
-		// Greedy matching: sort by similarity descending, match greedily
+		// FIX: Stable sort
 		sort.Slice(candidates, func(i, j int) bool {
-			return candidates[i].sim > candidates[j].sim
+			if candidates[i].sim != candidates[j].sim {
+				return candidates[i].sim > candidates[j].sim
+			}
+			if candidates[i].oldIdx != candidates[j].oldIdx {
+				return candidates[i].oldIdx < candidates[j].oldIdx
+			}
+			return candidates[i].newIdx < candidates[j].newIdx
 		})
 
 		usedOld := make(map[int]bool)
@@ -599,7 +543,6 @@ func MatchFunctionsByTopology(oldResults, newResults []FingerprintResult, thresh
 			usedNew[c.newIdx] = true
 		}
 
-		// Collect truly unmatched as added/removed
 		for i, r := range unmatchedOld {
 			if !usedOld[i] {
 				removedFuncs = append(removedFuncs, r)
@@ -611,7 +554,6 @@ func MatchFunctionsByTopology(oldResults, newResults []FingerprintResult, thresh
 			}
 		}
 	} else {
-		// No topology matching possible
 		removedFuncs = unmatchedOld
 		addedFuncs = unmatchedNew
 	}
@@ -619,21 +561,13 @@ func MatchFunctionsByTopology(oldResults, newResults []FingerprintResult, thresh
 	return matched, addedFuncs, removedFuncs
 }
 
-// Extracts the function name without the full package path.
-// For example:
-//
-//	"github.com/foo/bar.Method" -> "Method"
-//	"github.com/foo/bar.(*Type).Method" -> "(*Type).Method"
 func shortFuncName(fullName string) string {
-	// Find the last occurrence of "/" to strip the full module path
 	lastSlash := strings.LastIndex(fullName, "/")
 	name := fullName
 	if lastSlash >= 0 {
 		name = fullName[lastSlash+1:]
 	}
 
-	// Now name is like "pkg.FuncName" or "pkg.(*Type).Method"
-	// Find the first dot to strip the package name
 	depth := 0
 	for i, ch := range name {
 		switch ch {
@@ -650,14 +584,11 @@ func shortFuncName(fullName string) string {
 	return name
 }
 
-// Generates a short structural fingerprint for display purposes.
-// This is a human readable summary of the function's shape.
 func TopologyFingerprint(t *FunctionTopology) string {
 	if t == nil {
 		return "nil"
 	}
 
-	// Collect sorted call signatures for determinism
 	var calls []string
 	for sig := range t.CallSignatures {
 		calls = append(calls, sig)

@@ -252,6 +252,7 @@ func (z *Zipper) matchUsers(usersOld, usersNew []ssa.Instruction) {
 		}
 	}
 
+	// Determinism Fix: Users must be processed in deterministic order.
 	sortInstrs(usersOld)
 
 	for _, uOld := range usersOld {
@@ -261,6 +262,12 @@ func (z *Zipper) matchUsers(usersOld, usersNew []ssa.Instruction) {
 
 		fp := getFingerprint(uOld)
 		candidates := newByOp[fp] // Only compare against structurally compatible nodes
+
+		// Determinism Fix: Candidates retrieved from Referrers() have random order.
+		// We must sort them before greedy matching to ensure the same match is chosen every time.
+		if len(candidates) > 1 {
+			sortInstrs(candidates)
+		}
 
 		for _, uNew := range candidates {
 			if _, mapped := z.revInstrMap[uNew]; mapped {
@@ -405,6 +412,10 @@ func (z *Zipper) compareOperands(a, b ssa.Instruction) bool {
 			return false
 		}
 		valA := *ptrA
+		// FIX: Dereferencing opsB[i] without check caused panic.
+		if opsB[i] == nil {
+			return false
+		}
 		valB := *opsB[i]
 
 		if valA == nil && valB == nil {

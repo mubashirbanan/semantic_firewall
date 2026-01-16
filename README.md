@@ -1,15 +1,20 @@
+
 <div align="center">
 
 # Semantic Firewall
 
-### Behavioral Code Analysis Engine for Go
+### Next-Gen Code Integrity & Malware Detection for Go
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/BlackVectorOps/semantic_firewall.svg)](https://pkg.go.dev/github.com/BlackVectorOps/semantic_firewall/v2)
 [![License: MIT](https://img.shields.io/badge/License-MIT-00d4aa.svg)](LICENSE)
 [![Marketplace](https://img.shields.io/badge/Marketplace-Semantic_Firewall-7c3aed.svg)](https://github.com/marketplace/actions/semantic-firewall)
 [![Semantic Check](https://github.com/BlackVectorOps/semantic_firewall/actions/workflows/semantic-check.yml/badge.svg)](https://github.com/BlackVectorOps/semantic_firewall/actions/workflows/semantic-check.yml)
 
-**Fingerprint behavior, not bytes** · **Prove loop equivalence** · **Catch backdoors** · **Hunt malware**
+**Protect your codebase from hidden risks.**
+
+**Semantic Firewall** goes beyond traditional static analysis: it understands your code's *intent* and *behavior*, not just the text. Instantly spot risky changes, catch malware, and prove your code is safe--no matter how it's refactored or renamed.
+
+**No more false positives. No more missed backdoors.**
 
 </div>
 
@@ -20,50 +25,77 @@
 
 ---
 
+
 ## What is Semantic Firewall?
 
-**Semantic Firewall** is a static analysis engine that generates deterministic fingerprints of Go code's **behavior**, not its textual representation. Unlike traditional diff tools that get confused by whitespace, renaming, or style changes, Semantic Firewall understands the actual control flow and data dependencies of your code.
+**Semantic Firewall** is a new kind of static analysis tool for Go that:
 
-**Core Capabilities:**
+- **Fingerprints code by behavior, not by text** -- so you can refactor, rename, or reformat without breaking your security gates.
+- **Detects malware and backdoors** -- even if attackers try to hide them with obfuscation or clever tricks.
+- **Flags risky changes in pull requests** -- so you know when something *really* changes, not just when someone moves code around.
+
+**Why is this different?**
+
+- Traditional tools (like `git diff`, grep, or hash-based scanners) are easily fooled by renaming, whitespace, or code shuffling.
+- **Semantic Firewall** understands the *structure* and *intent* of your code. It knows when a function is logically the same--even if it looks different.
+- It also knows when something *dangerous* is added, like a hidden network call or a suspicious loop.
+
+**Key Features:**
+
+- **Behavioral fingerprinting**: Prove your code hasn't changed in intent, even after big refactors.
+- **Malware & backdoor detection**: Find threats by structure, not just by name or hash.
+- **Risk-aware diffs**: Instantly see if a PR adds risky logic, not just lines changed.
+- **Obfuscation & entropy analysis**: Spot packed or encrypted payloads.
+- **Zero-config persistent database**: Fast, scalable, and easy to use.
+
+<details>
+<summary><strong>See full feature table</strong></summary>
 
 | Feature | Description |
 |---------|-------------|
-| **Scalar Evolution (SCEV)** | Mathematically proves loop equivalence regardless of syntax |
-| **Semantic Zipper** | Diffs architectural changes by walking use-def chains in parallel |
-| **BoltDB Signature Store** | ACID-compliant persistent storage with O(1) topology lookups |
-| **Fuzzy Hash Indexing (LSH-lite)** | Locality-sensitive bucketing for near-match detection |
-| **Shannon Entropy Analysis** | Detects obfuscation, packing, and encrypted payloads |
-| **Topology Matching** | Catches renamed/obfuscated malware via structural fingerprints |
+| **Loop Equivalence** | Proves loops are logically identical, no matter the syntax |
+| **Semantic Diff** | Diffs code by behavior, not by text |
+| **Malware Indexing** | Store and hunt for known malware patterns |
+| **Obfuscation Detection** | Flags suspiciously complex or packed code |
+| **Dependency Scanning** | Scans your code and all its dependencies |
+
+</details>
 
 ---
 
-## Installation
+## Getting Started
 
 ```bash
 go install github.com/BlackVectorOps/semantic_firewall/v2/cmd/sfw@latest
 ```
 
-## Quick Start
+
+### Quick Start
+
 
 ```bash
-# Fingerprint a file (produces deterministic SHA-256 of behavior)
+# Check a file for risky changes
 sfw check ./main.go
 
-# Semantic diff between two versions (ignores cosmetic changes)
+# See what *really* changed between two versions
 sfw diff old_version.go new_version.go
 
-# Index a malware sample (auto-resolves DB location)
+# Index a known malware sample
 sfw index malware.go --name "Beacon_v1" --severity CRITICAL
 
-# Scan code for known malware patterns (O(1) topology matching)
-sfw scan ./suspicious/ --threshold 0.8
+# Scan your codebase for malware (fast, O(1) matching)
+sfw scan ./suspicious/
 
-# Scan with dependency analysis (examines imported packages)
-sfw scan ./cmd/myapp --deps --deps-depth transitive
+# Scan with dependency analysis
+sfw scan ./cmd/myapp --deps
 
-# View database statistics
+# See database stats
 sfw stats
 ```
+
+
+<details>
+<summary><strong>Show example outputs</strong></summary>
 
 **Check Output:**
 ```json
@@ -129,35 +161,96 @@ sfw stats
 }
 ```
 
+</details>
+
 ---
 
-## Why Use This?
 
-> **"Don't unit tests solve this?"** No. Unit tests verify *correctness* (does input A produce output B?). `sfw` verifies *intent* and *integrity*.
+## Why Developers Need Semantic Firewall
 
-- A developer refactors a function but secretly adds a network call → **unit tests pass, `sfw` fails**
-- A developer changes a `switch` to a Strategy Pattern → **`git diff` shows 100 lines changed, `sfw diff` shows zero logic changes**
-- An attacker renames a known malware function → **name-based detection fails, `sfw scan` catches it via topology**
-- A supply chain attack adds obfuscated code → **entropy analysis flags it as PACKED**
+- **No more noisy diffs:** See only what *matters*--real logic changes, not whitespace or renames.
+- **Catch what tests miss:** Unit tests check correctness. Semantic Firewall checks *intent* and *integrity*.
+- **Malware can't hide:** Renaming, obfuscation, or packing? Still detected.
+- **Refactor with confidence:** Prove your big refactor didn't change what matters.
+- **CI/CD ready:** Block PRs that sneak in risky logic.
 
-| Traditional Tooling | Semantic Firewall |
-|---------------------|-------------------|
-| **Git Diff**: Shows lines changed (whitespace, renaming = noise) | **sfw check**: Verifies control flow graph identity |
-| **Unit Tests**: Verify input/output (blind to side effects) | **sfw diff**: Isolates actual logic drift from cosmetic changes |
-| **YARA/Grep**: Pattern matches strings (trivial to evade) | **sfw scan**: O(1) topology matching survives renaming/obfuscation |
-| **Traditional AV**: Signature hashes (defeated by recompilation) | **sfw**: Behavioral fingerprints survive recompilation |
+| Traditional Tools | Semantic Firewall |
+|-------------------|------------------|
+| `git diff`        | `sfw diff`       |
+| Sees lines changed | Sees logic changed |
+| Fooled by renames | Survives refactors |
+| Hash-based AV     | Behavioral fingerprints |
+| YARA/grep         | Topology & intent matching |
 
 **Use cases:**
-- **Supply chain security:** Detect backdoors like the xz attack that pass code review
-- **Safe refactoring:** Prove your refactor didn't change behavior
-- **CI/CD gates:** Block PRs that alter critical function logic
-- **Malware hunting:** Index known malware patterns, scan codebases at scale
-- **Obfuscation detection:** Entropy analysis flags packed/encrypted code
-- **Dependency auditing:** Scan imported packages for malicious patterns
+- Supply chain security: catch backdoors that pass code review
+- Safe refactoring: prove your refactor is safe
+- CI/CD gates: block risky PRs
+- Malware hunting: scan codebases at scale
+- Obfuscation detection: flag packed/encrypted code
+- Dependency auditing: scan imported packages
 
 ---
 
-## Commands Reference
+
+---
+
+## Lie Detector Workflow
+
+**Worried about sneaky changes or hidden intent?**
+
+Supply chain attacks often hide behind boring commit messages like "fix typo" or "update formatting." `sfw audit` uses an LLM (or deterministic simulation if you dont want to bother with an api key) to compare the **developer's claim** against the **code's reality**.
+
+**Command:**
+
+```bash
+# Check if the commit message matches the code changes
+sfw audit old.go new.go "minor refactor of logging" --api-key sk-...
+```
+**The Verdict:**
+
+```json
+{
+  "inputs": {
+    "commit_message": "minor refactor of logging"
+  },
+  "risk_filter": {
+    "high_risk_detected": true,
+    "evidence_count": 1
+  },
+  "output": {
+    "verdict": "LIE",
+    "evidence": "Commit claims 'minor refactor' but evidence shows addition of high-risk network calls (net.Dial) and goroutines."
+  }
+}
+```
+
+**How it works:**
+
+1.  **Semantic Diff:** Calculates exact structural changes (ignoring whitespace).
+2.  **Risk Filter:** Isolates high-risk deltas (Network, FS, Concurrency).
+3.  **Intent Verification:** Asks the AI: *"Does 'fix typo' explain adding a reverse shell?"*
+
+**Typical CI/CD workflow:**
+
+```yaml
+jobs:
+  semantic-firewall:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Run Semantic Firewall
+        run: |
+          go install github.com/BlackVectorOps/semantic_firewall/v2/cmd/sfw@latest
+          sfw diff old.go new.go
+          sfw scan . --deps
+```
+
+**Result:**
+- PRs that only change formatting or names pass instantly.
+- PRs that add risky logic or malware get flagged for review.
+
+---
 
 | Command | Purpose | Time Complexity | Space |
 |---------|---------|-----------------|-------|
@@ -165,8 +258,9 @@ sfw stats
 | `sfw diff` | Semantic delta via Zipper algorithm | O(I) | O(I) |
 | `sfw index` | Index malware samples into BoltDB | O(N) | O(1) per sig |
 | `sfw scan` | Hunt malware via topology matching | **O(1) exact** / O(M) fuzzy | O(M) |
-| `sfw migrate` | Migrate JSON signatures to BoltDB | O(S) | O(S) |
+| `sfw migrate` | Migrate JSON signatures to PebbleDB | O(S) | O(S) |
 | `sfw stats` | Display database statistics | O(1) | O(1) |
+| `sfw audit` | Verify commit intent (AI Lie Detector) | O(I) + API | O(I) |
 
 Where N = source size, I = instructions, S = signatures, M = signatures in entropy range.
 
@@ -195,7 +289,14 @@ Scan target code for malware signatures. Use `--exact` for O(1) topology-only ma
 ```bash
 sfw migrate --from <json> --to <db>
 ```
-Migrate legacy JSON database to BoltDB format for O(1) lookups.
+Migrate legacy JSON database to PebbleDB format for O(1) lookups.
+
+```bash
+sfw audit <old.go> <new.go> "<commit message>" [--api-key <key>]
+```
+Verify if a commit message matches the structural code changes. Uses an LLM to detect deception (e.g., hiding a backdoor in a "typo fix").
+
+---
 
 ### Signature Database Configuration
 
@@ -216,103 +317,15 @@ Display database statistics including signature count and index sizes.
 
 ---
 
-## Proof of Equivalence: The SCEV Engine
 
-> **Skeptical that this survives more than whitespace changes?**
+<details>
+<summary><strong>Deep Technical Dive (Math, Graphs & Algorithms)</strong></summary>
 
-The Semantic Firewall uses **Scalar Evolution (SCEV)** analysis to mathematically prove loop identity. SCEV represents induction variables as closed-form algebraic expressions called **Add Recurrences**.
+<!-- All the advanced math, graphs, and technical details are moved here for power users -->
 
-**These three functions generate the IDENTICAL SHA-256 fingerprint:**
+## Persistent Signature Database (Pebble)
 
-**1. Idiomatic Go (Range)**
-```go
-func sum(items []int) int {
-    total := 0
-    for _, x := range items {
-        total += x
-    }
-    return total
-}
-```
-
-**2. C-Style (Index)**
-```go
-func sum(items []int) int {
-    total := 0
-    for i := 0; i < len(items); i++ {
-        total += items[i]
-    }
-    return total
-}
-```
-
-**3. Raw Control Flow (Goto)**
-```go
-func sum(items []int) int {
-    total := 0
-    i := 0
-loop:
-    if i >= len(items) {
-        goto done
-    }
-    total += items[i]
-    i++
-    goto loop
-done:
-    return total
-}
-```
-
-**All three compile to the same canonical control flow:**
-
-```mermaid
-flowchart TD
-    subgraph sg1 ["Canonical Control Flow"]
-        Entry["entry:<br/>total = 0<br/>i = {0, +, 1}"]
-        Loop{"i < len(items)?"}
-        Body["total += items[i]"]
-        Exit["return total"]
-        
-        Entry --> Loop
-        Loop -->|yes| Body
-        Body --> Loop
-        Loop -->|no| Exit
-    end
-```
-
-### The Add Recurrence Notation
-
-The SCEV notation `{Start, +, Step}` represents an induction variable where at iteration $k$:
-
-$$Val(k) = Start + (Step \times k)$$
-
-So `{0, +, 1}` means "starts at 0, increments by 1 each iteration"; this algebraic representation is identical regardless of source syntax.
-
-**SCEV is closed under affine transformations:**
-
-| Operation | Result |
-|-----------|--------|
-| `{S, +, T} + C` | `{S+C, +, T}` |
-| `C × {S, +, T}` | `{C×S, +, C×T}` |
-| `{S₁, +, T₁} + {S₂, +, T₂}` | `{S₁+S₂, +, T₁+T₂}` |
-
-**Verify it yourself:**
-```bash
-go run examples/proof.go
-
-# Output:
-# [Semantic Firewall Proof]
-# 1. Range Loop Hash:  0a1b2c...
-# 2. Index Loop Hash:  0a1b2c...
-# 3. Goto Loop Hash:   0a1b2c...
-# [SUCCESS] All three implementations are logically identical.
-```
-
----
-
-## Persistent Signature Database (BoltDB)
-
-The scanner uses **BoltDB**, an embedded key-value store with ACID transactions, for signature storage. This enables:
+The scanner uses **Pebble**, an embedded key-value store inspired by RocksDB, for signature storage. This enables:
 
 - **O(1) exact topology lookups** via indexed hash keys
 - **O(M) fuzzy matching** via range scans on entropy indexes
@@ -322,17 +335,13 @@ The scanner uses **BoltDB**, an embedded key-value store with ACID transactions,
 
 ### Database Schema
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                        BoltDB Buckets                           │
-├─────────────────────────────────────────────────────────────────┤
-│  signatures     │  ID → JSON blob (full signature)              │
-│  idx_topology   │  TopologyHash → ID (O(1) exact match)         │
-│  idx_fuzzy      │  FuzzyHash:ID → ID (LSH bucket index)         │
-│  idx_entropy    │  "05.1234:ID" → ID (range scan index)         │
-│  meta           │  version, stats, maintenance info             │
-└─────────────────────────────────────────────────────────────────┘
-```
+Pebble uses a flat key-space, and we simulate buckets by using prefixes:
+
+- `sig:ID -> JSON blob` (full signature)
+- `topo:TopologyHash:ID -> ID` (O(1) exact match)
+- `fuzzy:FuzzyHash:ID -> ID` (LSH bucket index)
+- `entr:EntropyKey -> ID` (range scan index)
+- `meta:key -> value` (version, stats, maintenance info)
 
 ### Entropy Key Encoding
 
@@ -801,10 +810,9 @@ type ControlFlowHints struct {
 
 ---
 
-## Technical Deep Dive
+## Architecture & Algorithms
 
-<details>
-<summary><strong>Click to expand: Architecture & Algorithms</strong></summary>
+
 
 ### Pipeline Overview
 
@@ -1128,6 +1136,7 @@ When comparing function versions, structural changes receive risk scores:
 
 High cumulative risk scores flag changes that warrant extra review.
 
+
 </details>
 
 ---
@@ -1140,6 +1149,6 @@ MIT License. See [LICENSE](LICENSE) for details.
 
 ---
 
-**Built for the security-conscious developer**
+**Built for every developer who cares about code integrity and security**
 
 </div>

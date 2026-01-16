@@ -437,11 +437,9 @@ func checkGreater(a, b int) bool {
 	}
 }
 
-// ============================================================================
-// Security Vulnerability Tests - Added from audit remediation
-// ============================================================================
+// -- Security Vulnerability Tests --
 
-// TestRenamerRecursionCycleDoS reproduces the Stack Overflow / DoS vulnerability.
+// reproduces the Stack Overflow / DoS vulnerability.
 // Checks if the fix correctly handles cyclic SCEV structures without crashing.
 func TestRenamerRecursionCycleDoS(t *testing.T) {
 	c := NewCanonicalizer(DefaultLiteralPolicy)
@@ -483,7 +481,7 @@ func TestRenamerRecursionCycleDoS(t *testing.T) {
 	}
 }
 
-// TestSanitizeTypeInjection checks for IR injection via struct tags.
+// checks for IR injection via struct tags.
 func TestSanitizeTypeInjection(t *testing.T) {
 	// A type string with a newline that mimics an IR instruction
 	maliciousTag := "struct { F int `json:\"val\"\nReturn` }"
@@ -528,7 +526,7 @@ func use() Malicious { return Malicious{} }
 	}
 }
 
-// TestTripCountPrecision checks for the ceiling division fix.
+// checks for the ceiling division fix.
 // Loop: i=0; i < 5; i+=2. Iterations: 0, 2, 4 (Count = 3).
 // Old logic: 5/2 = 2.
 func TestTripCountPrecision(t *testing.T) {
@@ -561,7 +559,7 @@ func loop() int {
 	}
 }
 
-// TestSubtractionCommutativity verifies that subtraction is not treated as commutative.
+// checks that subtraction is not treated as commutative.
 // Loop: i = C - i (oscillating) should NOT be classified as Basic IV.
 func TestSubtractionCommutativity(t *testing.T) {
 	// This creates a pattern where step = C - phi, not phi - C
@@ -599,7 +597,7 @@ func oscillate() int {
 	}
 }
 
-// TestDeterministicLoopExits verifies that loop analysis produces deterministic results.
+// checks that loop analysis produces deterministic results.
 func TestDeterministicLoopExits(t *testing.T) {
 	src := `package main
 func multiExit(n int) int {
@@ -644,7 +642,7 @@ func multiExit(n int) int {
 	}
 }
 
-// TestSanitizeTypeNewlineInResult verifies sanitizeType handles newlines properly.
+// checks that sanitizeType handles newlines properly.
 func TestSanitizeTypeNewlineInResult(t *testing.T) {
 	// Test the sanitizeType function directly with a string containing newlines
 	// Since we can't easily inject a type with newlines, we test the string replacement logic
