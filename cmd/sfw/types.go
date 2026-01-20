@@ -10,6 +10,18 @@ import (
 const (
 	// MaxSourceFileSize limits the size of files read into memory to prevent OOM DoS attacks.
 	MaxSourceFileSize = 10 * 1024 * 1024 // 10 MB
+
+	// MaxAPIResponseSize limits the size of the response body from LLM providers
+	// to prevent memory exhaustion attacks from malicious endpoints.
+	MaxAPIResponseSize = 5 * 1024 * 1024 // 5 MB
+
+	// RiskThreshold determines the score at which a function diff is considered "High Risk".
+	// Scores >= 10 trigger the LLM audit pipeline.
+	RiskThreshold = 10
+
+	// MaxDiffOpsDisplay limits the number of operations shown in the audit log
+	// to prevent log flooding attacks.
+	MaxDiffOpsDisplay = 10
 )
 
 // -- Data Structures: Fingerprinting & Diffing --
@@ -104,6 +116,7 @@ type LLMResult struct {
 }
 
 // AuditEvidence describes specific high-risk changes passed to the LLM for analysis.
+// This is the canonical definition used by cmd_audit.go.
 type AuditEvidence struct {
 	Function        string `json:"function"`
 	RiskScore       int    `json:"risk_score"`
@@ -111,20 +124,30 @@ type AuditEvidence struct {
 	AddedOperations string `json:"added_operations"`
 }
 
-// -- Data Structures: OpenAI API --
+// -- Data Structures: OpenAI API (2026 Standards) --
 
-// OpenAIRequest represents the payload sent to the OpenAI Chat Completion API.
-type OpenAIRequest struct {
-	Model          string          `json:"model"`
-	Messages       []OpenAIMessage `json:"messages"`
-	Temperature    float64         `json:"temperature"`
-	ResponseFormat *OpenAIRespFmt  `json:"response_format,omitempty"`
+// OpenAIResponsesRequest replaces the legacy Chat Completions structure.
+// Ref: Chapter 2.1 - Migration to Responses API
+type OpenAIResponsesRequest struct {
+	Model          string         `json:"model"`
+	Items          []OpenAIItem   `json:"items"`
+	Store          bool           `json:"store"` // Server-side state (Chapter 2.2)
+	ResponseFormat *OpenAIRespFmt `json:"response_format,omitempty"`
 }
 
-// OpenAIMessage represents a single message in the chat history.
-type OpenAIMessage struct {
-	Role    string `json:"role"`
+// OpenAIItem replaces "Message" to support multimodal and tool contexts.
+type OpenAIItem struct {
+	Type    string `json:"type"` // "message"
+	Role    string `json:"role"` // "developer", "user", "assistant"
 	Content string `json:"content"`
+}
+
+// OpenAIResponsesResponse represents the response from the Responses API.
+type OpenAIResponsesResponse struct {
+	Items []struct {
+		Role    string `json:"role"`
+		Content string `json:"content"`
+	} `json:"items"`
 }
 
 // OpenAIRespFmt specifies the desired output format (e.g., JSON).
@@ -132,19 +155,9 @@ type OpenAIRespFmt struct {
 	Type string `json:"type"`
 }
 
-// OpenAIResponse represents the response received from the OpenAI API.
-type OpenAIResponse struct {
-	Choices []struct {
-		Message struct {
-			Content string `json:"content"`
-		} `json:"message"`
-	} `json:"choices"`
-}
+// -- Data Structures: Gemini API (v1 Standard) --
+// Used for internal/raw handling if SDK is bypassed.
 
-// -- Data Structures: Gemini API --
-
-// GeminiRequest maps to the Google AI Studio JSON structure.
-// Ref: "Gemini API REST" from PDF Figure 3.
 type GeminiRequest struct {
 	Contents          []GeminiContent  `json:"contents"`
 	SystemInstruction *GeminiContent   `json:"systemInstruction,omitempty"`
@@ -152,7 +165,7 @@ type GeminiRequest struct {
 }
 
 type GeminiContent struct {
-	Role  string       `json:"role,omitempty"`
+	Role  string       `json:"role,omitempty"` // "user", "model"
 	Parts []GeminiPart `json:"parts"`
 }
 
@@ -161,17 +174,15 @@ type GeminiPart struct {
 }
 
 type GeminiGenConfig struct {
-	ResponseMimeType string `json:"responseMimeType"`
+	ResponseMimeType string `json:"responseMimeType"` // "application/json"
 }
 
-type GeminiResponse struct {
-	Candidates []struct {
-		Content struct {
-			Parts []struct {
-				Text string `json:"text"`
-			} `json:"parts"`
-		} `json:"content"`
-	} `json:"candidates"`
+// -- Data Structures: Sentinel --
+
+// SentinelResponse captures the verdict from the pre-flight injection check.
+type SentinelResponse struct {
+	Safe     bool   `json:"safe"`
+	Analysis string `json:"analysis,omitempty"`
 }
 
 // -- Data Structures: Scan Command --

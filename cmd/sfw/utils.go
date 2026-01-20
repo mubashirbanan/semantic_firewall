@@ -1,3 +1,4 @@
+// -- ./cmd/sfw/utils.go --
 // utils.go
 package main
 
@@ -6,7 +7,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 
 	semanticfw "github.com/BlackVectorOps/semantic_firewall/v2"
@@ -193,17 +193,6 @@ func shortFunctionName(fullName string) string {
 
 func isJSON(path string) bool {
 	return strings.HasSuffix(path, ".json")
-}
-
-// cleanJSONMarkdown extracts valid JSON from potential markdown blocks in LLM responses.
-func cleanJSONMarkdown(text string) string {
-	// Try finding the first JSON object block
-	re := regexp.MustCompile(`(?s)\{.*\}`)
-	if match := re.FindString(text); match != "" {
-		return match
-	}
-	// Fallback: return trimmed text
-	return strings.TrimSpace(text)
 }
 
 func exitError(err error) {

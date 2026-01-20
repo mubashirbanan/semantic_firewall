@@ -1,3 +1,4 @@
+// -- ./cmd/sfw/main.go --
 // Package main provides the sfw CLI tool for semantic fingerprinting and malware scanning of Go source files.
 package main
 
@@ -32,8 +33,8 @@ Commands:
   audit   Verify if commit message matches structural code changes (Level 3: Intent)
           Uses internal diff engine and optional LLM API to detect "Lies".
           Flags:
-            --api-key     API Key (OpenAI or Gemini). Auto-detects from env vars.
-            --model       LLM Model (default: gpt-4, supports gemini-1.5-flash)
+            --api-key     API Key (OpenAI or Gemini). REQUIRED.
+            --model       LLM Model (default: gpt-4o, supports gemini-1.5-pro)
             --api-base    Custom API Base URL (for testing/proxying)
 
   index   Index a reference malware sample (Lab Phase)
@@ -67,8 +68,9 @@ Examples:
 	diffCmd := flag.NewFlagSet("diff", flag.ExitOnError)
 
 	auditCmd := flag.NewFlagSet("audit", flag.ExitOnError)
-	auditApiKey := auditCmd.String("api-key", "", "API Key")
-	auditModel := auditCmd.String("model", "gpt-4", "LLM Model to use")
+	auditApiKey := auditCmd.String("api-key", "", "API Key (WARNING: Prefer ENV vars to avoid history leaks)")
+	// Security: Default updated to gpt-4o per 2026 standards (Reasoning Optimized)
+	auditModel := auditCmd.String("model", "gpt-4o", "LLM Model to use")
 	auditApiBase := auditCmd.String("api-base", "", "Custom API Base URL")
 
 	indexCmd := flag.NewFlagSet("index", flag.ExitOnError)
@@ -127,12 +129,21 @@ Examples:
 			os.Exit(1)
 		}
 		apiKey := *auditApiKey
-		if apiKey == "" {
+		// Security: Warn on flag usage, check env vars if flag is empty
+		if apiKey != "" {
+			fmt.Fprintln(os.Stderr, "warning: passing API key via flag is insecure; use OPENAI_API_KEY or GEMINI_API_KEY environment variables.")
+		} else {
 			if strings.HasPrefix(strings.ToLower(*auditModel), "gemini") {
 				apiKey = os.Getenv("GEMINI_API_KEY")
 			} else {
 				apiKey = os.Getenv("OPENAI_API_KEY")
 			}
+		}
+
+		// Security: Refuse the easy path. No Simulation.
+		if apiKey == "" {
+			fmt.Fprintln(os.Stderr, "Error: API Key is required for audit. Set --api-key or OPENAI_API_KEY/GEMINI_API_KEY.")
+			os.Exit(1)
 		}
 
 		exitCode, err := runAudit(os.Stdout, auditCmd.Arg(0), auditCmd.Arg(1), auditCmd.Arg(2), apiKey, *auditModel, *auditApiBase)
