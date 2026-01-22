@@ -6,6 +6,7 @@ import (
 	"go/types"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 
 	"golang.org/x/tools/go/ssa"
@@ -612,7 +613,11 @@ func (z *Zipper) getFingerprint(instr ssa.Instruction) string {
 	// Includes instruction specific details and call targets to ensure distinct
 	// operations fall into different buckets.
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "%T", instr)
+	if instr == nil {
+		sb.WriteString("<nil>")
+	} else {
+		sb.WriteString(reflect.TypeOf(instr).String())
+	}
 
 	switch i := instr.(type) {
 	case *ssa.BinOp:
@@ -656,9 +661,11 @@ func (z *Zipper) getFingerprint(instr ssa.Instruction) string {
 		sb.WriteString(i.Type().String())
 	case *ssa.Field:
 		// Distinguish field accesses
-		fmt.Fprintf(&sb, ":field:%d", i.Field)
+		sb.WriteString(":field:")
+		sb.WriteString(strconv.Itoa(i.Field))
 	case *ssa.FieldAddr:
-		fmt.Fprintf(&sb, ":fieldaddr:%d", i.Field)
+		sb.WriteString(":fieldaddr:")
+		sb.WriteString(strconv.Itoa(i.Field))
 	case *ssa.Index:
 		sb.WriteString(":index")
 	case *ssa.IndexAddr:
